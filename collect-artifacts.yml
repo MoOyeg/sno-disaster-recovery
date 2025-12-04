@@ -1,0 +1,96 @@
+---
+- name: Collect SNO cluster artifacts
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Setup authentication parameters
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+
+    - name: Display collection paths
+      ansible.builtin.debug:
+        msg:
+          - "Collecting artifacts for: {{ sno_cluster_name }}"
+          - "Source credentials: {{ install_config_dir }}"
+          - "Destination artifacts: {{ artifacts_dir }}"
+
+    - name: Set kubeconfig path
+      ansible.builtin.set_fact:
+        kubeconfig_path: "{{ install_config_dir }}/auth/kubeconfig"
+
+    - name: Check if kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ kubeconfig_path }}"
+      register: kubeconfig_stat
+      delegate_to: localhost
+
+    - name: Fail if kubeconfig not found
+      ansible.builtin.fail:
+        msg: "Kubeconfig not found at {{ kubeconfig_path }}. Cluster may not be installed yet."
+      when: not kubeconfig_stat.stat.exists
+
+    - name: Check if kubeadmin password exists
+      ansible.builtin.stat:
+        path: "{{ install_config_dir }}/auth/kubeadmin-password"
+      register: kubeadmin_password_stat
+      delegate_to: localhost
+
+    - name: Create artifacts directory
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    - name: Copy kubeconfig to artifacts
+      ansible.builtin.copy:
+        src: "{{ kubeconfig_path }}"
+        dest: "{{ artifacts_dir }}/kubeconfig"
+        mode: '0600'
+      delegate_to: localhost
+
+    - name: Copy kubeadmin password to artifacts
+      ansible.builtin.copy:
+        src: "{{ install_config_dir }}/auth/kubeadmin-password"
+        dest: "{{ artifacts_dir }}/kubeadmin-password"
+        mode: '0600'
+      delegate_to: localhost
+      when: kubeadmin_password_stat.stat.exists
+
+    - name: Get cluster version
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: ClusterVersion
+        name: version
+        kubeconfig: "{{ kubeconfig_path }}"
+        validate_certs: false
+      register: cluster_version
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Create cluster info file
+      ansible.builtin.copy:
+        content: |
+          Cluster Name: {{ sno_cluster_name }}
+          Base Domain: {{ sno_base_domain }}
+          OpenShift Version: {{ cluster_version.resources[0].status.desired.version | default(sno_openshift_version) if cluster_version.resources | default([]) | length > 0 else sno_openshift_version }}
+          API URL: https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443
+          Console URL: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}
+          Collection Date: {{ lookup('pipe', 'date -u +"%Y-%m-%dT%H:%M:%SZ"') }}
+        dest: "{{ artifacts_dir }}/cluster-info.txt"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Display artifacts collection status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Artifacts Collection Complete"
+          - "Cluster: {{ sno_cluster_name }}"
+          - "Artifacts directory: {{ artifacts_dir }}"
+          - "Files collected:"
+          - "  - kubeconfig"
+          - "  - {{ 'kubeadmin-password' if kubeadmin_password_stat.stat.exists else 'kubeadmin-password (not found)' }}"
+          - "  - cluster-info.txt"
+          - "=========================================="

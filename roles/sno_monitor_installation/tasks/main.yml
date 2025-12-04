@@ -1,0 +1,231 @@
+---
+- name: Wait for VirtualMachineInstance to be running
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    name: "{{ sno_vm_name }}"
+    namespace: "{{ sno_namespace }}"
+  args: "{{ k8s_auth_params }}"
+  register: vmi_info
+  until:
+    - vmi_info.resources | length > 0
+    - vmi_info.resources[0].status.phase | default('') == 'Running'
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Display VM status
+  ansible.builtin.debug:
+    msg:
+      - "VM Name: {{ sno_vm_name }}"
+      - "VM Phase: {{ vmi_info.resources[0].status.phase | default('Unknown') if vmi_info.resources | length > 0 else 'Not found' }}"
+      - "VM Node: {{ vmi_info.resources[0].status.nodeName | default('N/A') if vmi_info.resources | length > 0 else 'N/A' }}"
+
+- name: Fail if VM is not running
+  ansible.builtin.fail:
+    msg: "VirtualMachineInstance {{ sno_vm_name }} is not running"
+  when:
+    - vmi_info.resources | length == 0 or vmi_info.resources[0].status.phase | default('') != 'Running'
+
+- name: Set cluster API URL
+  ansible.builtin.set_fact:
+    cluster_api_url: "https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443"
+    cluster_api_host: "api.{{ sno_cluster_name }}.{{ sno_base_domain }}"
+
+- name: Display cluster API information
+  ansible.builtin.debug:
+    msg:
+      - "Cluster API URL: {{ cluster_api_url }}"
+      - "Cluster API Host: {{ cluster_api_host }}"
+
+- name: Wait for cluster API to be reachable (ping test)
+  ansible.builtin.command:
+    cmd: "/usr/bin/ping -c 1 -W 2 {{ cluster_api_host }}"
+  delegate_to: localhost
+  register: ping_result
+  until: ping_result.rc == 0
+  retries: 60
+  delay: 10
+  failed_when: false
+  changed_when: false
+
+- name: Display ping result
+  ansible.builtin.debug:
+    msg: "Cluster API host {{ cluster_api_host }} is {{ 'reachable' if ping_result.rc == 0 else 'not reachable' }}"
+
+- name: Wait for cluster API port to be open
+  ansible.builtin.wait_for:
+    host: "{{ cluster_api_host }}"
+    port: 6443
+    timeout: 600
+    delay: 10
+  delegate_to: localhost
+  when: ping_result.rc == 0
+
+- name: Wait for API server to respond
+  ansible.builtin.uri:
+    url: "{{ cluster_api_url }}/healthz"
+    method: GET
+    validate_certs: false
+    status_code: 200
+  delegate_to: localhost
+  register: api_health
+  until: api_health.status == 200
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Display API health status
+  ansible.builtin.debug:
+    msg: "Cluster API health check: {{ 'Success' if api_health.status == 200 else 'Failed' }}"
+
+- name: Set installation paths
+  ansible.builtin.set_fact:
+    kubeconfig_path: "{{ install_config_dir }}/auth/kubeconfig"
+
+- name: Wait for kubeconfig to be generated
+  ansible.builtin.stat:
+    path: "{{ kubeconfig_path }}"
+  register: kubeconfig_stat
+  delegate_to: localhost
+  until: kubeconfig_stat.stat.exists
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Display kubeconfig status
+  ansible.builtin.debug:
+    msg: "Kubeconfig {{ 'found' if kubeconfig_stat.stat.exists else 'not found' }} at {{ kubeconfig_path }}"
+
+- name: Query cluster version (when kubeconfig exists)
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: ClusterVersion
+    name: version
+    kubeconfig: "{{ kubeconfig_path }}"
+    validate_certs: false
+  register: cluster_version
+  delegate_to: localhost
+  until: cluster_version.resources | default([]) | length > 0
+  retries: 15
+  delay: 120
+  failed_when: false
+  when: kubeconfig_stat.stat.exists
+
+- name: Display cluster version status
+  ansible.builtin.debug:
+    msg:
+      - "Cluster Version: {{ cluster_version.resources[0].status.desired.version | default('Unknown') }}"
+      - "Update Status: {{ cluster_version.resources[0].status.conditions | selectattr('type', 'equalto', 'Progressing') | map(attribute='status') | first | default('Unknown') }}"
+  when:
+    - kubeconfig_stat.stat.exists
+    - cluster_version is defined
+    - cluster_version.resources is defined
+    - cluster_version.resources | length > 0
+    - cluster_version.resources[0].status is defined
+
+- name: Query cluster operators (when cluster version is available)
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: ClusterOperator
+    kubeconfig: "{{ kubeconfig_path }}"
+    validate_certs: false
+  register: cluster_operators
+  delegate_to: localhost
+  until:
+    - cluster_operators.resources | default([]) | length > 0
+  retries: 30
+  delay: 20
+  failed_when: false
+  when:
+    - kubeconfig_stat.stat.exists
+    - cluster_version is defined
+    - cluster_version.resources is defined
+    - cluster_version.resources | length > 0
+
+- name: Display cluster operators status
+  ansible.builtin.debug:
+    msg: "{{ item.metadata.name }}: Available={{ item.status.conditions | default([]) | selectattr('type', 'equalto', 'Available') | map(attribute='status') | first | default('Unknown') }}, Degraded={{ item.status.conditions | default([]) | selectattr('type', 'equalto', 'Degraded') | map(attribute='status') | first | default('Unknown') }}"
+  loop: "{{ cluster_operators.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - kubeconfig_stat.stat.exists
+    - cluster_operators.resources is defined
+    - cluster_operators.resources | length > 0
+
+- name: Check installation completion
+  ansible.builtin.set_fact:
+    installation_complete: "{{ kubeconfig_stat.stat.exists and cluster_version.resources | default([]) | length > 0 and api_health.status | default(0) == 200 }}"
+
+- name: Extract cluster credentials
+  when: installation_complete | bool
+  block:
+    - name: Read kubeadmin password
+      ansible.builtin.slurp:
+        src: "{{ install_config_dir }}/auth/kubeadmin-password"
+      register: kubeadmin_password
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Display cluster credentials
+      ansible.builtin.debug:
+        msg:
+          - "==================== CLUSTER ACCESS ===================="
+          - "Kubeconfig: {{ kubeconfig_path }}"
+          - "Kubeadmin password: {{ kubeadmin_password.content | b64decode if kubeadmin_password.content is defined else 'Not available yet' }}"
+          - "Console URL: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}"
+          - "API URL: {{ cluster_api_url }}"
+          - "========================================================"
+
+- name: Save installation artifacts
+  when: installation_complete | bool
+  block:
+    - name: Create artifacts directory
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    - name: Copy kubeconfig
+      ansible.builtin.copy:
+        src: "{{ kubeconfig_path }}"
+        dest: "{{ artifacts_dir }}/kubeconfig"
+        mode: '0600'
+      delegate_to: localhost
+
+    - name: Copy kubeadmin password
+      ansible.builtin.copy:
+        src: "{{ install_config_dir }}/auth/kubeadmin-password"
+        dest: "{{ artifacts_dir }}/kubeadmin-password"
+        mode: '0600'
+      delegate_to: localhost
+      when: kubeadmin_password.content is defined
+
+    - name: Create cluster info file
+      ansible.builtin.copy:
+        content: |
+          Cluster Name: {{ sno_cluster_name }}
+          Base Domain: {{ sno_base_domain }}
+          OpenShift Version: {{ sno_openshift_version }}
+          API URL: {{ cluster_api_url }}
+          Console URL: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}
+          Installation Date: {{ lookup('pipe', 'date -u +"%Y-%m-%dT%H:%M:%SZ"') }}
+        dest: "{{ artifacts_dir }}/cluster-info.txt"
+        mode: '0644'
+      delegate_to: localhost
+
+- name: Display installation status summary
+  ansible.builtin.debug:
+    msg:
+      - "=========================================="
+      - "Installation Monitoring Summary"
+      - "VM Running: {{ 'Yes' if vmi_info.resources | length > 0 and vmi_info.resources[0].status.phase == 'Running' else 'No' }}"
+      - "API Reachable (ping): {{ 'Yes' if ping_result.rc == 0 else 'No' }}"
+      - "API Health Check: {{ 'Success' if api_health.status | default(0) == 200 else 'Failed' }}"
+      - "Kubeconfig Available: {{ 'Yes' if kubeconfig_stat.stat.exists else 'No' }}"
+      - "Cluster Version: {{ cluster_version.resources[0].status.desired.version | default('Unknown') if cluster_version.resources | default([]) | length > 0 else 'Unknown' }}"
+      - "Installation Complete: {{ 'Yes' if installation_complete else 'No' }}"
+      - "=========================================="
+

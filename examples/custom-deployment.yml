@@ -1,0 +1,33 @@
+---
+# Example: Deploy SNO with custom configuration
+- name: Deploy SNO with custom specs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openshift_api_url: "https://api.ocp.example.com:6443"
+    openshift_token: "{{ lookup('env', 'OPENSHIFT_TOKEN') }}"
+    sno_cluster_name: "dev-sno"
+    sno_base_domain: "dev.example.com"
+    sno_namespace: "sno-dev"
+    sno_vm_cores: 12
+    sno_vm_memory: "48Gi"
+    sno_vm_disk_size: "200Gi"
+    sno_openshift_version: "4.14.8"
+    sno_storage_class: "ocs-storagecluster-ceph-rbd"
+  
+  tasks:
+    - name: Include prerequisites role
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+
+    - name: Include installation preparation role
+      ansible.builtin.include_role:
+        name: sno_prepare_installation
+
+    - name: Include VM creation role
+      ansible.builtin.include_role:
+        name: sno_create_vm
+
+    - name: Include installation monitoring role
+      ansible.builtin.include_role:
+        name: sno_monitor_installation

@@ -1,0 +1,25 @@
+apiVersion: v1
+baseDomain: {{ sno_base_domain }}
+metadata:
+  name: {{ sno_cluster_name }}
+compute:
+  - name: worker
+    replicas: 0
+controlPlane:
+  name: master
+  replicas: 1
+networking:
+  networkType: OVNKubernetes
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+  machineNetwork:
+    - cidr: 10.0.0.0/16
+platform:
+  none: {}
+bootstrapInPlace:
+  installationDisk: /dev/vda
+pullSecret: '{{ lookup("file", sno_pull_secret_file) | string }}'
+sshKey: '{{ sno_ssh_public_key }}'

@@ -1,0 +1,149 @@
+---
+- name: Import SNO cluster into ACM
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+
+    - name: Display ACM status
+      ansible.builtin.debug:
+        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+
+    - name: Skip import if ACM is not installed
+      ansible.builtin.meta: end_host
+      when: acm_check.resources | length == 0
+
+    - name: Set cluster kubeconfig path
+      ansible.builtin.set_fact:
+        cluster_kubeconfig: "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}/kubeconfig"
+
+    - name: Check if cluster kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ cluster_kubeconfig }}"
+      register: kubeconfig_stat
+      delegate_to: localhost
+
+    - name: Fail if kubeconfig not found
+      ansible.builtin.fail:
+        msg: "Kubeconfig not found at {{ cluster_kubeconfig }}. Cluster must be deployed first."
+      when: not kubeconfig_stat.stat.exists
+
+    - name: Read cluster kubeconfig
+      ansible.builtin.slurp:
+        src: "{{ cluster_kubeconfig }}"
+      register: kubeconfig_content
+      delegate_to: localhost
+
+    - name: Create namespace for managed cluster
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ sno_cluster_name }}"
+        state: present
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create auto-import secret
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: auto-import-secret
+        namespace: "{{ sno_cluster_name }}"
+        state: present
+        definition:
+          type: Opaque
+          stringData:
+            autoImportRetry: "5"
+            kubeconfig: "{{ kubeconfig_content.content | b64decode }}"
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create ManagedCluster resource
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ sno_cluster_name }}"
+        state: present
+        definition:
+          metadata:
+            labels: "{{ acm_labels | default({}) | combine({'name': sno_cluster_name, 'cluster.open-cluster-management.io/clusterset': acm_clusterset | default('default')}) }}"
+          spec:
+            hubAcceptsClient: true
+            leaseDurationSeconds: 60
+      args: "{{ k8s_auth_params }}"
+
+    - name: Wait for ManagedCluster to be accepted
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ sno_cluster_name }}"
+      args: "{{ k8s_auth_params }}"
+      register: managed_cluster
+      until:
+        - managed_cluster.resources | length > 0
+        - managed_cluster.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'HubAcceptedManagedCluster') | map(attribute='status') | first | default('False') == 'True'
+      retries: 30
+      delay: 10
+      failed_when: false
+
+    - name: Wait for ManagedCluster to be available
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ sno_cluster_name }}"
+      args: "{{ k8s_auth_params }}"
+      register: managed_cluster_available
+      until:
+        - managed_cluster_available.resources | length > 0
+        - managed_cluster_available.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | first | default('False') == 'True'
+      retries: 60
+      delay: 10
+      failed_when: false
+
+    - name: Display import status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "ACM Import Status"
+          - "Cluster: {{ sno_cluster_name }}"
+          - "Namespace: {{ sno_cluster_name }}"
+          - "Accepted: {{ managed_cluster.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'HubAcceptedManagedCluster') | map(attribute='status') | first | default('Unknown') if managed_cluster.resources | length > 0 else 'Unknown' }}"
+          - "Available: {{ managed_cluster_available.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | first | default('Unknown') if managed_cluster_available.resources | length > 0 else 'Unknown' }}"
+          - "=========================================="
+
+    - name: Apply VolSync KlusterletAddonConfig
+      kubernetes.core.k8s:
+        api_version: agent.open-cluster-management.io/v1
+        kind: KlusterletAddonConfig
+        name: "{{ sno_cluster_name }}"
+        namespace: "{{ sno_cluster_name }}"
+        state: present
+        definition:
+          spec:
+            applicationManager:
+              enabled: true
+            certPolicyController:
+              enabled: true
+            policyController:
+              enabled: true
+            searchCollector:
+              enabled: true
+            volsync:
+              enabled: true
+      args: "{{ k8s_auth_params }}"
+      register: volsync_addon_result
+      failed_when: false
+
+    - name: Display VolSync addon status
+      ansible.builtin.debug:
+        msg: "VolSync KlusterletAddonConfig applied for cluster {{ sno_cluster_name }}"
+      when: volsync_addon_result is succeeded

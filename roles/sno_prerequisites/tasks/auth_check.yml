@@ -1,0 +1,49 @@
+---
+# Validate authentication method is available
+- name: Check if using kubeconfig authentication
+  ansible.builtin.set_fact:
+    using_kubeconfig: "{{ openshift_use_kubeconfig | bool }}"
+
+- name: Display authentication method
+  ansible.builtin.debug:
+    msg: "Using {{ 'kubeconfig' if using_kubeconfig else 'token' }} authentication"
+
+- name: Validate kubeconfig file exists
+  ansible.builtin.stat:
+    path: "{{ openshift_kubeconfig }}"
+  register: kubeconfig_stat
+  delegate_to: localhost
+  when: using_kubeconfig
+
+- name: Fail if kubeconfig doesn't exist
+  ansible.builtin.fail:
+    msg: "Kubeconfig file not found at {{ openshift_kubeconfig }}"
+  when:
+    - using_kubeconfig
+    - not kubeconfig_stat.stat.exists
+
+- name: Fail if token is empty
+  ansible.builtin.fail:
+    msg: |
+      OPENSHIFT_TOKEN is not set. Please set it with:
+      export OPENSHIFT_TOKEN=$(oc whoami -t)
+      
+      Alternatively, use kubeconfig authentication by setting KUBECONFIG
+  when:
+    - not using_kubeconfig
+    - openshift_token == ''
+
+- name: Set common k8s module parameters (kubeconfig)
+  ansible.builtin.set_fact:
+    k8s_auth_params:
+      kubeconfig: "{{ openshift_kubeconfig }}"
+      validate_certs: "{{ openshift_validate_certs }}"
+  when: using_kubeconfig
+
+- name: Set common k8s module parameters (token)
+  ansible.builtin.set_fact:
+    k8s_auth_params:
+      host: "{{ openshift_api_url }}"
+      api_key: "{{ openshift_token }}"
+      validate_certs: "{{ openshift_validate_certs }}"
+  when: not using_kubeconfig

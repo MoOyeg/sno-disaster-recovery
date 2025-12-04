@@ -1,0 +1,186 @@
+---
+- name: Destroy Single Node OpenShift cluster
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Load authentication parameters
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+
+    - name: Get VirtualMachine status
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: vm_info
+      ignore_errors: true
+
+    - name: Stop VirtualMachine gracefully
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+        state: present
+        definition:
+          spec:
+            running: false
+      args: "{{ k8s_auth_params }}"
+      when: vm_info.resources | length > 0
+      ignore_errors: true
+
+    - name: Wait for VirtualMachineInstance to stop (max 10 minutes)
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: vmi_check
+      until: vmi_check.resources | length == 0
+      retries: 60
+      delay: 10
+      when: vm_info.resources | length > 0
+      ignore_errors: true
+
+    - name: Force delete VirtualMachineInstance if still running
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when:
+        - vm_info.resources | length > 0
+        - vmi_check.resources | default([]) | length > 0
+      ignore_errors: true
+
+    - name: Delete VirtualMachine
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Delete PVC for SNO disk (only if not using existing PVC)
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-disk"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when: sno_existing_rootdisk_pvc | default('') == ''
+      ignore_errors: true
+
+    - name: Display rootdisk PVC status
+      ansible.builtin.debug:
+        msg: "Preserved existing rootdisk PVC: {{ sno_existing_rootdisk_pvc }}"
+      when: sno_existing_rootdisk_pvc | default('') != ''
+
+    - name: Delete secondary disk PVC (only if not using existing PVC)
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-disk2"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when:
+        - sno_add_secondary_disk | default(false) | bool
+        - sno_existing_secondary_disk_pvc | default('') == ''
+      ignore_errors: true
+
+    - name: Display secondary disk PVC status
+      ansible.builtin.debug:
+        msg: "Preserved existing secondary disk PVC: {{ sno_existing_secondary_disk_pvc }}"
+      when:
+        - sno_add_secondary_disk | default(false) | bool
+        - sno_existing_secondary_disk_pvc | default('') != ''
+
+    - name: Delete ISO DataVolume
+      kubernetes.core.k8s:
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataVolume
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Delete pull secret
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: "{{ sno_cluster_name }}-pull-secret"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Check if ACM auto-import is enabled
+      ansible.builtin.set_fact:
+        should_cleanup_acm: "{{ acm_auto_import | default(false) | bool }}"
+
+    - name: Delete ManagedCluster from ACM (if auto-imported)
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ sno_cluster_name }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when: should_cleanup_acm
+      ignore_errors: true
+
+    - name: Delete ACM namespace (if auto-imported)
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ sno_cluster_name }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when: should_cleanup_acm
+      ignore_errors: true
+
+    - name: Display ACM cleanup status
+      ansible.builtin.debug:
+        msg: "Deleted ManagedCluster and namespace {{ sno_cluster_name }} from ACM"
+      when: should_cleanup_acm
+
+    - name: Delete sno-clusters namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Remove cluster credentials directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}"
+        state: absent
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: Remove cluster artifacts directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}"
+        state: absent
+      delegate_to: localhost
+      ignore_errors: true
+
+    - name: Display deletion status
+      ansible.builtin.debug:
+        msg:
+          - "SNO cluster {{ sno_cluster_name }} resources have been deleted"
+          - "Namespace {{ sno_namespace }} has been deleted"
+          - "Credentials directory removed: credentials/{{ sno_cluster_name }}"
+          - "Artifacts directory removed: artifacts/{{ sno_cluster_name }}"

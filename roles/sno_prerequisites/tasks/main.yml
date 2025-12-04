@@ -1,0 +1,163 @@
+---
+- name: Validate authentication configuration
+  ansible.builtin.include_tasks: auth_check.yml
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ sno_namespace }}"
+    state: present
+  args: "{{ k8s_auth_params }}"
+
+- name: Check if pull secret file exists
+  ansible.builtin.stat:
+    path: "{{ sno_pull_secret_file }}"
+  register: pull_secret_stat
+  delegate_to: localhost
+
+- name: Fail if pull secret is missing
+  ansible.builtin.fail:
+    msg: "Pull secret file not found at {{ sno_pull_secret_file }}"
+  when: not pull_secret_stat.stat.exists
+
+- name: Read pull secret content
+  ansible.builtin.slurp:
+    src: "{{ sno_pull_secret_file }}"
+  register: pull_secret_content
+  delegate_to: localhost
+
+- name: Create pull secret in namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Secret
+    name: "{{ sno_cluster_name }}-pull-secret"
+    namespace: "{{ sno_namespace }}"
+    state: present
+    definition:
+      type: Opaque
+      data:
+        .dockerconfigjson: "{{ pull_secret_content.content }}"
+  args: "{{ k8s_auth_params }}"
+
+- name: Check if SSH public key file exists
+  ansible.builtin.stat:
+    path: "{{ sno_ssh_public_key_file }}"
+  register: ssh_key_stat
+  delegate_to: localhost
+
+- name: Fail if SSH public key is missing
+  ansible.builtin.fail:
+    msg: "SSH public key file not found at {{ sno_ssh_public_key_file }}"
+  when: not ssh_key_stat.stat.exists
+
+- name: Read SSH public key
+  ansible.builtin.slurp:
+    src: "{{ sno_ssh_public_key_file }}"
+  register: ssh_public_key_content
+  delegate_to: localhost
+
+- name: Set SSH public key fact
+  ansible.builtin.set_fact:
+    sno_ssh_public_key: "{{ ssh_public_key_content.content | b64decode | trim }}"
+
+- name: Verify storage class exists
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ sno_storage_class }}"
+  args: "{{ k8s_auth_params }}"
+  register: storage_class_info
+
+- name: Get all storage classes if specified class doesn't exist
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  args: "{{ k8s_auth_params }}"
+  register: all_storage_classes
+  when: storage_class_info.resources | length == 0
+
+- name: Debug storage classes
+  ansible.builtin.debug:
+    msg: "Found {{ all_storage_classes.resources | length }} storage classes"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+
+- name: Debug storage class annotations
+  ansible.builtin.debug:
+    msg: "SC: {{ item.metadata.name }} | Annotations: {{ item.metadata.annotations | default({}) }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Find virtualization default storage class
+  ansible.builtin.set_fact:
+    virt_default_storage_class: "{{ item.metadata.name }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['storageclass.kubevirt.io/is-default-virt-class'] is defined
+    - item.metadata.annotations['storageclass.kubevirt.io/is-default-virt-class'] == 'true'
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Find default storage class
+  ansible.builtin.set_fact:
+    default_storage_class: "{{ item.metadata.name }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['storageclass.kubernetes.io/is-default-class'] is defined
+    - item.metadata.annotations['storageclass.kubernetes.io/is-default-class'] == 'true'
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Use virtualization default storage class if available
+  ansible.builtin.set_fact:
+    sno_storage_class: "{{ virt_default_storage_class }}"
+    storage_class_type: "virt-default"
+  when:
+    - storage_class_info.resources | length == 0
+    - virt_default_storage_class is defined
+    - virt_default_storage_class != ''
+
+- name: Use default storage class if virt default not available
+  ansible.builtin.set_fact:
+    sno_storage_class: "{{ default_storage_class }}"
+    storage_class_type: "default"
+  when:
+    - storage_class_info.resources | length == 0
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - default_storage_class is defined
+    - default_storage_class != ''
+
+- name: Set storage class type for specified class
+  ansible.builtin.set_fact:
+    storage_class_type: "specified"
+  when: storage_class_info.resources | length > 0
+
+- name: Fail if no storage class available
+  ansible.builtin.fail:
+    msg: "Storage class {{ sno_storage_class }} not found and no default storage class is available"
+  when:
+    - storage_class_info.resources | length == 0
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - (default_storage_class is not defined or default_storage_class == '')
+
+- name: Display prerequisites status
+  ansible.builtin.debug:
+    msg:
+      - "Prerequisites validated successfully"
+      - "Namespace: {{ sno_namespace }}"
+      - "Storage class: {{ sno_storage_class }}{{ ' (' + storage_class_type + ')' if storage_class_type is defined and storage_class_type != 'specified' else '' }}"
+      - "Pull secret: configured"
+      - "SSH key: configured"

@@ -1,0 +1,28 @@
+---
+- name: Deploy Single Node OpenShift on OpenShift Virtualization
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Include prerequisites role
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+
+    - name: Include OpenShift installation preparation role
+      ansible.builtin.include_role:
+        name: sno_prepare_installation
+
+    - name: Include VM creation role
+      ansible.builtin.include_role:
+        name: sno_create_vm
+
+    - name: Display preparation status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "SNO VM Preparation Complete!"
+          - "Cluster Name: {{ sno_cluster_name }}"
+          - "Base Domain: {{ sno_base_domain }}"
+          - "VM created (without ISO)"
+          - "Next steps: ISO embedding, upload, and VM start"
+          - "=========================================="
+

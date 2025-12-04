@@ -1,0 +1,552 @@
+---
+- name: Deploy infrastructure to SNO clusters via ACM Policy
+  hosts: sno_clusters
+  gather_facts: false
+  vars:
+    operator_policy_action: "present"  # Set to "absent" to delete all resources
+    sno_secondary_disk_device: "/dev/vdb"  # Default device path for secondary disk
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+
+    - name: Display ACM status
+      ansible.builtin.debug:
+        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+
+    - name: Skip deployment if ACM is not installed
+      ansible.builtin.meta: end_host
+      when: acm_check.resources | length == 0
+
+    - name: Gather MetalLB configuration from all clusters
+      ansible.builtin.set_fact:
+        all_metallb_ranges: "{{ all_metallb_ranges | default([]) + [{'cluster': inventory_hostname, 'ranges': metallb_ip_address_ranges | default([])}] }}"
+      run_once: false
+
+    - name: Check if MetalLB subnets are shared
+      ansible.builtin.set_fact:
+        metallb_subnets_shared: "{{ all_metallb_ranges | map(attribute='ranges') | select('defined') | list | length > 0 and (all_metallb_ranges | map(attribute='ranges') | select('defined') | map('first') | map('regex_replace', '(\\d+\\.\\d+\\.\\d+)\\..*', '\\1') | unique | list | length == 1) }}"
+      run_once: true
+      delegate_to: localhost
+      when: all_metallb_ranges | default([]) | length > 0
+
+    - name: Display MetalLB network configuration
+      ansible.builtin.debug:
+        msg: |
+          MetalLB Configuration Analysis:
+          {% for item in all_metallb_ranges %}
+          - {{ item.cluster }}: {{ item.ranges | default('No MetalLB configured') }}
+          {% endfor %}
+          {% if all_metallb_ranges | map(attribute='ranges') | select('defined') | list | length > 0 %}
+          
+          Network Topology:
+          {% if metallb_subnets_shared | default(false) %}
+          ✓ MetalLB subnets are SHARED across clusters
+          ✓ Application LoadBalancer IPs will be directly accessible
+          ✓ No Submariner required for inter-cluster communication
+          {% else %}
+          ✗ MetalLB subnets are NOT SHARED across clusters
+          ⚠ Submariner will be enabled for inter-cluster connectivity
+          ⚠ Application traffic will be routed through Submariner Gateway
+          {% endif %}
+          {% endif %}
+      run_once: true
+      delegate_to: localhost
+      when: all_metallb_ranges | default([]) | length > 0
+
+    - name: Create namespace for policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create PlacementRule for SNO clusters
+      kubernetes.core.k8s:
+        api_version: apps.open-cluster-management.io/v1
+        kind: PlacementRule
+        name: sno-clusters-placement
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          spec:
+            clusterSelector:
+              matchLabels:
+                cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create Policy for MetalLB Operator
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-metallb-operator
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: metallb-operator-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: metallb-system
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1beta1
+                  kind: OperatorPolicy
+                  metadata:
+                    name: metallb-operator
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    complianceType: musthave
+                    upgradeApproval: Automatic
+                    pruneObjectBehavior: DeleteIfCreated
+                    subscription:
+                      channel: stable
+                      name: metallb-operator
+                      namespace: metallb-system
+                      source: redhat-operators
+                      sourceNamespace: openshift-marketplace
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create Policy for Local Storage Operator
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-local-storage-operator
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: local-storage-operator-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: openshift-local-storage
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1beta1
+                  kind: OperatorPolicy
+                  metadata:
+                    name: local-storage-operator
+                  spec:
+                    operatorGroup:
+                      name: local-storage-operator-group
+                      namespace: openshift-local-storage
+                      targetNamespaces:
+                        - openshift-local-storage
+                    remediationAction: enforce
+                    severity: medium
+                    complianceType: musthave
+                    upgradeApproval: Automatic
+                    pruneObjectBehavior: DeleteIfCreated
+                    subscription:
+                      channel: stable
+                      name: local-storage-operator
+                      namespace: openshift-local-storage
+                      source: redhat-operators
+                      sourceNamespace: openshift-marketplace
+      args: "{{ k8s_auth_params }}"
+      when: sno_secondary_disk_device is defined and sno_secondary_disk_device != ""
+
+    - name: Create Policy for LVM Storage Operator
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-lvm-storage-operator
+        namespace: sno-operator-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: lvm-operator-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: openshift-lvm-storage
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1beta1
+                  kind: OperatorPolicy
+                  metadata:
+                    name: lvm-storage-operator
+                  spec:
+                    operatorGroup:
+                      name: lvm-operator-group
+                      namespace: openshift-lvm-storage
+                      targetNamespaces:
+                        - openshift-lvm-storage
+                    remediationAction: enforce
+                    severity: medium
+                    complianceType: musthave
+                    upgradeApproval: Automatic
+                    pruneObjectBehavior: DeleteIfCreated
+                    subscription:
+                      channel: stable-4.19
+                      name: lvms-operator
+                      namespace: openshift-lvm-storage
+                      source: redhat-operators
+                      sourceNamespace: openshift-marketplace
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create Policy for MetalLB IPAddressPool per cluster
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "configure-metallb-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: metallb-ipaddresspool
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: metallb.io/v1beta1
+                          kind: IPAddressPool
+                          metadata:
+                            name: "{{ sno_cluster_name }}-ips"
+                            namespace: metallb-system
+                          spec:
+                            addresses: "{{ metallb_ip_address_ranges }}"
+      args: "{{ k8s_auth_params }}"
+      when: metallb_ip_address_ranges | default([]) | length > 0
+
+    - name: Create Policy for Local Storage configuration per cluster
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "configure-local-storage-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: local-storage-localvolume
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: local.storage.openshift.io/v1
+                          kind: LocalVolume
+                          metadata:
+                            name: "{{ sno_cluster_name }}-local-storage"
+                            namespace: openshift-local-storage
+                          spec:
+                            nodeSelector:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - key: node-role.kubernetes.io/master
+                                      operator: Exists
+                            storageClassDevices:
+                              - storageClassName: "{{ sno_cluster_name }}-local-sc"
+                                volumeMode: Filesystem
+                                fsType: xfs
+                                devicePaths:
+                                  - "{{ sno_secondary_disk_device | default('/dev/vdb') }}"
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: local-storage-pvc
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: PersistentVolumeClaim
+                          metadata:
+                            name: "{{ sno_cluster_name }}-local-pvc"
+                            namespace: openshift-local-storage
+                          spec:
+                            accessModes:
+                              - ReadWriteOnce
+                            resources:
+                              requests:
+                                storage: "{{ sno_secondary_disk_size }}"
+                            storageClassName: "{{ sno_cluster_name }}-local-sc"
+      args: "{{ k8s_auth_params }}"
+      when: sno_add_secondary_disk | default(false) | bool
+
+    - name: Add local storage policy to cluster placement
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: "binding-local-storage-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          placementRef:
+            name: "{{ sno_cluster_name }}-placement"
+            kind: PlacementRule
+            apiGroup: apps.open-cluster-management.io
+          subjects:
+            - name: "configure-local-storage-{{ sno_cluster_name }}"
+              kind: Policy
+              apiGroup: policy.open-cluster-management.io
+      args: "{{ k8s_auth_params }}"
+      when: sno_add_secondary_disk | default(false) | bool
+
+    - name: Create Placement for cluster-specific MetalLB config
+      kubernetes.core.k8s:
+        api_version: apps.open-cluster-management.io/v1
+        kind: PlacementRule
+        name: "{{ sno_cluster_name }}-placement"
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          spec:
+            clusterSelector:
+              matchLabels:
+                name: "{{ sno_cluster_name }}"
+      args: "{{ k8s_auth_params }}"
+      when: metallb_ip_address_ranges | default([]) | length > 0
+
+    - name: Create PlacementBinding for cluster-specific MetalLB policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: "binding-metallb-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          placementRef:
+            name: "{{ sno_cluster_name }}-placement"
+            kind: PlacementRule
+            apiGroup: apps.open-cluster-management.io
+          subjects:
+            - name: "configure-metallb-{{ sno_cluster_name }}"
+              kind: Policy
+              apiGroup: policy.open-cluster-management.io
+      args: "{{ k8s_auth_params }}"
+      when: metallb_ip_address_ranges | default([]) | length > 0
+
+    - name: Create PolicySet for SNO Operators
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1beta1
+        kind: PolicySet
+        name: sno-operators-policyset
+        namespace: sno-operator-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            description: Install required operators on SNO clusters
+            policies:
+              - install-metallb-operator
+              - install-local-storage-operator
+              - install-lvm-storage-operator
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create PlacementBinding for PolicySet
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: binding-sno-operators-policyset
+        namespace: sno-operator-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-clusters-placement
+            kind: PlacementRule
+            apiGroup: apps.open-cluster-management.io
+          subjects:
+            - name: sno-operators-policyset
+              kind: PolicySet
+              apiGroup: policy.open-cluster-management.io
+      args: "{{ k8s_auth_params }}"
+
+    - name: Enable Submariner if MetalLB subnets are not shared
+      when:
+        - metallb_subnets_shared is defined
+        - not metallb_subnets_shared | default(true)
+        - operator_policy_action == "present"
+      run_once: true
+      block:
+        - name: Display Submariner deployment message
+          ansible.builtin.debug:
+            msg:
+              - "=========================================="
+              - "SUBMARINER DEPLOYMENT REQUIRED"
+              - "Reason: MetalLB IP ranges are on different subnets"
+              - "Action: Enabling Submariner for inter-cluster connectivity"
+              - "=========================================="
+
+        - name: Create ManagedClusterSet for Submariner
+          kubernetes.core.k8s:
+            api_version: cluster.open-cluster-management.io/v1beta2
+            kind: ManagedClusterSet
+            name: sno-clusterset
+            state: present
+            definition:
+              spec: {}
+          args: "{{ k8s_auth_params }}"
+
+        - name: Add clusters to ManagedClusterSet
+          kubernetes.core.k8s:
+            api_version: cluster.open-cluster-management.io/v1
+            kind: ManagedCluster
+            name: "{{ item.cluster }}"
+            state: present
+            definition:
+              metadata:
+                labels:
+                  cluster.open-cluster-management.io/clusterset: sno-clusterset
+          args: "{{ k8s_auth_params }}"
+          loop: "{{ all_metallb_ranges }}"
+
+        - name: Create namespace for Submariner broker
+          kubernetes.core.k8s:
+            api_version: v1
+            kind: Namespace
+            name: submariner-operator
+            state: present
+          args: "{{ k8s_auth_params }}"
+
+        - name: Deploy Submariner broker
+          kubernetes.core.k8s:
+            api_version: submariner.io/v1alpha1
+            kind: Broker
+            name: submariner-broker
+            namespace: submariner-operator
+            state: present
+            definition:
+              spec:
+                globalnetEnabled: false
+          args: "{{ k8s_auth_params }}"
+
+        - name: Create SubmarinerConfig for each cluster
+          kubernetes.core.k8s:
+            api_version: submarineraddon.open-cluster-management.io/v1alpha1
+            kind: SubmarinerConfig
+            name: submariner
+            namespace: "{{ item.cluster }}"
+            state: present
+            definition:
+              spec:
+                gatewayConfig:
+                  gateways: 1
+                  aws:
+                    instanceType: m5n.large
+                IPSecNATTPort: 4500
+                NATTEnable: true
+                cableDriver: libreswan
+                credentialsSecret:
+                  name: "{{ item.cluster }}-aws-creds"
+          args: "{{ k8s_auth_params }}"
+          loop: "{{ all_metallb_ranges }}"
+          when: item.ranges | default([]) | length > 0
+
+    - name: Display deployment status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "ACM Operator PolicySet Created"
+          - "Namespace: sno-operator-policies"
+          - "PolicySet: sno-operators-policyset"
+          - "Policies:"
+          - "  - install-metallb-operator"
+          - "  - install-local-storage-operator"
+          - "  - install-lvm-storage-operator"
+          - "{{ '  - configure-metallb-' + sno_cluster_name + ' (IPAddressPool)' if metallb_ip_address_ranges | default([]) | length > 0 else '' }}"
+          - "{{ '  - configure-local-storage-' + sno_cluster_name + ' (LocalVolume + PVC on ' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_add_secondary_disk | default(false) | bool else '' }}"
+          - "Placement: sno-clusters-placement"
+          - "Target: Clusters with label 'cluster-type: sno'"
+          - "{{ 'MetalLB IP Ranges: ' + (metallb_ip_address_ranges | join(', ')) if metallb_ip_address_ranges | default([]) | length > 0 else 'MetalLB IP Ranges: Not configured' }}"
+          - "{{ 'Secondary Disk: Enabled (' + sno_secondary_disk_size + ')' if sno_add_secondary_disk | default(false) | bool else 'Secondary Disk: Disabled' }}"
+          - "{{ 'Submariner: ENABLED (subnets not shared)' if metallb_subnets_shared is defined and not metallb_subnets_shared else 'Submariner: Not required (shared subnet)' if metallb_subnets_shared is defined else '' }}"
+          - "=========================================="

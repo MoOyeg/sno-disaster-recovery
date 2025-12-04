@@ -1,0 +1,68 @@
+---
+# Configure network interfaces and networks based on network type
+
+- name: Set default pod network configuration
+  ansible.builtin.set_fact:
+    sno_vm_interfaces:
+      - name: default
+        masquerade: {}
+        model: virtio
+    sno_vm_networks:
+      - name: default
+        pod: {}
+  when: sno_network_attachment_definition == ''
+
+- name: Parse NetworkAttachmentDefinition
+  ansible.builtin.set_fact:
+    nad_namespace: "{{ sno_network_attachment_definition.split('/')[0] if '/' in sno_network_attachment_definition else sno_namespace }}"
+    nad_name: "{{ sno_network_attachment_definition.split('/')[-1] }}"
+  when: sno_network_attachment_definition != ''
+
+- name: Verify NetworkAttachmentDefinition exists
+  kubernetes.core.k8s_info:
+    api_version: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    name: "{{ nad_name }}"
+    namespace: "{{ nad_namespace }}"
+  args: "{{ k8s_auth_params }}"
+  register: nad_info
+  when: sno_network_attachment_definition != ''
+
+- name: Create machine-net NetworkAttachmentDefinition if it doesn't exist
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ playbook_dir }}/network/machine-net.yaml"
+  args: "{{ k8s_auth_params }}"
+  when:
+    - sno_network_attachment_definition != ''
+    - nad_name == 'machine-net'
+    - nad_info.resources | length == 0
+
+- name: Fail if NetworkAttachmentDefinition doesn't exist and is not machine-net
+  ansible.builtin.fail:
+    msg: "NetworkAttachmentDefinition {{ nad_name }} not found in namespace {{ nad_namespace }}"
+  when:
+    - sno_network_attachment_definition != ''
+    - nad_name != 'machine-net'
+    - nad_info.resources | length == 0
+
+- name: Set custom network configuration with NAD
+  ansible.builtin.set_fact:
+    sno_vm_interfaces:
+      - name: default
+        bridge: {}
+        model: virtio
+        macAddress: "{{ sno_vm_mac_address if sno_vm_mac_address != '' else omit }}"
+    sno_vm_networks:
+      - name: default
+        multus:
+          networkName: "{{ nad_namespace }}/{{ nad_name }}"
+  when: sno_network_attachment_definition != ''
+
+- name: Display network configuration
+  ansible.builtin.debug:
+    msg:
+      - "Network configuration:"
+      - "Type: {{ 'NetworkAttachmentDefinition' if sno_network_attachment_definition != '' else 'Pod Network' }}"
+      - "{{ 'NAD: ' + nad_namespace + '/' + nad_name if sno_network_attachment_definition != '' else 'Using default pod networking' }}"
+      - "{{ 'MAC Address: ' + sno_vm_mac_address if sno_vm_mac_address != '' else 'MAC Address: auto-generated' }}"

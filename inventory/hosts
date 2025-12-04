@@ -1,0 +1,6 @@
+[localhost]
+localhost ansible_connection=local
+
+[sno_clusters]
+sno-cluster2
+sno-cluster

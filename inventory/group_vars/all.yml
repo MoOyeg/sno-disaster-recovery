@@ -1,0 +1,115 @@
+---
+# OpenShift Virtualization Connection Details
+# Authentication can be done via token OR kubeconfig
+# Priority: kubeconfig (if K8S_AUTH_KUBECONFIG is set) > token
+
+# API URL (required when using token authentication)
+openshift_api_url: "https://api.your-cluster.example.com:6443"
+
+# Token authentication (Option 1)
+openshift_token: "{{ lookup('env', 'OPENSHIFT_TOKEN') | default('', true) }}"
+
+# Kubeconfig authentication (Option 2)
+# Set K8S_AUTH_KUBECONFIG environment variable or place kubeconfig at:
+# - $KUBECONFIG
+# - ~/.kube/config
+# - ./kubeconfig
+openshift_kubeconfig: "{{ lookup('env', 'K8S_AUTH_KUBECONFIG') | default('', true) }}"
+
+# Certificate validation
+openshift_validate_certs: false
+
+# Determine which authentication to use
+openshift_use_kubeconfig: "{{ openshift_kubeconfig != '' }}"
+
+# SNO Cluster Configuration
+sno_cluster_name: "sno-cluster"
+sno_base_domain: "example.com"
+sno_namespace: "sno-clusters"
+
+# Directory Configuration
+install_config_dir: "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}"
+artifacts_dir: "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}"
+
+# VM Specifications
+sno_vm_name: "{{ sno_cluster_name }}-vm"
+sno_vm_cores: 8
+sno_vm_sockets: 1
+sno_vm_threads: 1
+sno_vm_memory: "32Gi"
+sno_vm_disk_size: "120Gi"
+
+# Storage Configuration
+sno_storage_class: "ocs-storagecluster-ceph-rbd"
+sno_pvc_access_mode: "ReadWriteOnce"
+
+# Use existing PVC for rootdisk (optional)
+# If set, the specified PVC will be used instead of creating a new one
+# Leave empty to create a new PVC using sno_storage_class
+sno_existing_rootdisk_pvc: ""  # e.g., "my-existing-pvc"
+
+# Secondary disk configuration (optional)
+# Set to true to add a secondary disk to the VM
+sno_add_secondary_disk: true
+sno_secondary_disk_size: "10Gi" # Size of the secondary disk if created
+#if using local storage volume for secondary disk, specify device path
+#If not comment it out to use PVC from default storage class
+sno_secondary_disk_device: "/dev/vdb"  # Device path for local storage volume
+sno_existing_secondary_disk_pvc: ""  # Use existing PVC or leave empty to create new one
+
+# Network Configuration
+sno_network_type: "pod"  # Options: 'pod' (default), 'multus', 'bridge'
+sno_network_name: "default"  # Network name for pod network
+
+# NetworkAttachmentDefinition (for multus/bridge networking)
+# Leave empty to use default pod networking
+sno_network_attachment_definition: ""  # e.g., "sno-clusters/vlan100-network"
+
+# Static IP configuration (optional, requires appropriate CNI plugin)
+sno_vm_ip: ""  # Leave empty for DHCP or specify static IP
+sno_vm_netmask: "255.255.255.0"
+sno_vm_gateway: ""
+sno_vm_dns_servers:
+  - "8.8.8.8"
+  - "8.8.4.4"
+
+# MAC address (optional, leave empty for auto-generation)
+sno_vm_mac_address: ""
+
+# OpenShift Installation Configuration
+sno_openshift_version: "4.20.2"
+sno_pull_secret_file: "{{ playbook_dir }}/pull-secret.json"
+sno_ssh_public_key_file: "{{ playbook_dir }}/ssh-key.pub"
+
+# Installation ISO (can be pre-generated or created during automation)
+sno_iso_url: ""  # Optional: URL to pre-generated ISO
+sno_generate_iso: true  # ISO will be downloaded and ignition embedded automatically on host
+
+# ISO Cloning - Clone the ISO DataVolume for each VM deployment
+# Recommended: true (prevents re-downloading ISO for multiple deployments)
+sno_clone_iso: true
+sno_iso_source_name: "rhcos-{{ sno_openshift_version.split('.')[:2] | join('.') }}-iso"
+
+# Assisted Installer Configuration
+assisted_service_url: "https://api.openshift.com/api/assisted-install/v2"
+assisted_offline_token: "{{ lookup('env', 'ASSISTED_OFFLINE_TOKEN') }}"
+
+# Installation Timeouts (in seconds)
+sno_installation_timeout: 3600
+sno_vm_ready_timeout: 600
+
+# ACM (Advanced Cluster Management) Integration
+# Set to true to automatically import cluster into ACM after deployment
+acm_auto_import: true
+acm_labels:  # Custom labels to apply to ManagedCluster
+  cloud: "auto-detect"
+  vendor: "OpenShift"
+  environment: "dev"
+  addons.open-cluster-management.io/volsync: "true"
+  cluster-type: "sno"
+acm_clusterset: "default"  # ManagedClusterSet to assign cluster to
+
+# MetalLB IPAddressPool Configuration
+# Define IP address ranges for MetalLB load balancer
+# Override in host_vars for cluster-specific IP ranges
+metallb_ip_address_ranges: []  # e.g., ["192.168.102.246-192.168.102.254"]

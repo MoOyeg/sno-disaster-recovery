@@ -1,0 +1,31 @@
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: static-ip-network
+  namespace: sno-clusters
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "name": "static-ip-network",
+      "type": "bridge",
+      "bridge": "br-static",
+      "ipam": {
+        "type": "static",
+        "addresses": [
+          {
+            "address": "192.168.100.0/24"
+          }
+        ],
+        "routes": [
+          {
+            "dst": "0.0.0.0/0",
+            "gw": "192.168.100.1"
+          }
+        ],
+        "dns": {
+          "nameservers": ["8.8.8.8", "8.8.4.4"]
+        }
+      }
+    }

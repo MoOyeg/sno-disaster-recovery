@@ -1,0 +1,3 @@
+---
+# Defaults for sno_monitor_installation role
+kubeconfig_path: "{{ install_config_dir }}/auth/kubeconfig"

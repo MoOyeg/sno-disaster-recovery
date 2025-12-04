@@ -1,0 +1,115 @@
+---
+- name: Upload embedded ISO to OpenShift Virtualization
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Include prerequisites role
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+
+    - name: Set cluster-specific paths
+      ansible.builtin.set_fact:
+        embedded_iso: "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}/rhcos-live.iso"
+
+    - name: Note about ISO file
+      ansible.builtin.debug:
+        msg: "Using embedded ISO at {{ embedded_iso }}"
+
+    - name: Verify embedded ISO exists
+      ansible.builtin.stat:
+        path: "{{ embedded_iso }}"
+      register: iso_stat
+      delegate_to: localhost
+
+    - name: Display ISO file status
+      ansible.builtin.debug:
+        msg: 
+          - "ISO path: {{ embedded_iso }}"
+          - "ISO exists: {{ iso_stat.stat.exists }}"
+          - "ISO size: {{ iso_stat.stat.size | default('N/A') }}"
+
+    - name: Fail if ISO not found
+      ansible.builtin.fail:
+        msg: "Embedded ISO not found at {{ embedded_iso }}"
+      when: not iso_stat.stat.exists
+
+    - name: Check if ISO DataVolume already exists
+      kubernetes.core.k8s_info:
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataVolume
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: existing_iso_dv
+
+    - name: Delete existing ISO DataVolume if present
+      kubernetes.core.k8s:
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataVolume
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when: existing_iso_dv.resources | length > 0
+
+    - name: Wait for ISO DataVolume deletion
+      kubernetes.core.k8s_info:
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataVolume
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: dv_check
+      until: dv_check.resources | length == 0
+      retries: 30
+      delay: 5
+      when: existing_iso_dv.resources | length > 0
+
+    - name: Check if ISO PVC exists
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: existing_iso_pvc
+
+    - name: Delete existing ISO PVC if present
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      when: existing_iso_pvc.resources | length > 0
+
+    - name: Wait for ISO PVC deletion
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: pvc_check
+      until: pvc_check.resources | length == 0
+      retries: 30
+      delay: 5
+      when: existing_iso_pvc.resources | length > 0
+
+    - name: Upload embedded ISO using virtctl (creates DataVolume automatically)
+      ansible.builtin.command:
+        cmd: >
+          virtctl image-upload dv {{ sno_vm_name }}-iso
+          --namespace {{ sno_namespace }}
+          --image-path {{ embedded_iso }}
+          --size 10Gi
+          --storage-class {{ sno_storage_class }}
+          --insecure
+      delegate_to: localhost
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'K8S_AUTH_KUBECONFIG') | default(lookup('env', 'KUBECONFIG')) }}"
+
+    - name: Display upload status
+      ansible.builtin.debug:
+        msg: "Successfully uploaded embedded ISO to DataVolume {{ sno_vm_name }}-iso"

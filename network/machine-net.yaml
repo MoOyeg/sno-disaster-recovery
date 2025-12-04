@@ -1,0 +1,30 @@
+---
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+ name: ovs-bridge-mapping-machine-net
+spec:
+ desiredState:
+   ovn:
+     bridge-mappings:
+       - localnet: machine-net
+         bridge: br-ex
+         state: present
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+ annotations:
+   description: Attach to machine network segment
+ name: machine-net
+ namespace: default
+spec:
+ config: |-
+   {
+     "cniVersion": "0.4.0",
+     "name": "machine-net",
+     "type": "ovn-k8s-cni-overlay",
+     "topology": "localnet",
+     "netAttachDefName": "default/machine-net",
+     "ipam": {}
+   }

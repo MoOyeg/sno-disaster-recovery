@@ -1,0 +1,96 @@
+---
+- name: Verify storage class exists
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ sno_storage_class }}"
+  args: "{{ k8s_auth_params }}"
+  register: storage_class_info
+
+- name: Get all storage classes if specified class doesn't exist
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  args: "{{ k8s_auth_params }}"
+  register: all_storage_classes
+  when: storage_class_info.resources | length == 0
+
+- name: Debug storage classes
+  ansible.builtin.debug:
+    msg: "Found {{ all_storage_classes.resources | length }} storage classes"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+
+- name: Debug storage class annotations
+  ansible.builtin.debug:
+    msg: "SC: {{ item.metadata.name }} | Annotations: {{ item.metadata.annotations | default({}) }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Find virtualization default storage class
+  ansible.builtin.set_fact:
+    virt_default_storage_class: "{{ item.metadata.name }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['storageclass.kubevirt.io/is-default-virt-class'] is defined
+    - item.metadata.annotations['storageclass.kubevirt.io/is-default-virt-class'] == 'true'
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Find default storage class
+  ansible.builtin.set_fact:
+    default_storage_class: "{{ item.metadata.name }}"
+  loop: "{{ all_storage_classes.resources }}"
+  when: 
+    - storage_class_info.resources | length == 0
+    - all_storage_classes.resources is defined
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['storageclass.kubernetes.io/is-default-class'] is defined
+    - item.metadata.annotations['storageclass.kubernetes.io/is-default-class'] == 'true'
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Use virtualization default storage class if available
+  ansible.builtin.set_fact:
+    sno_storage_class: "{{ virt_default_storage_class }}"
+    storage_class_type: "virt-default"
+  when:
+    - storage_class_info.resources | length == 0
+    - virt_default_storage_class is defined
+    - virt_default_storage_class != ''
+
+- name: Use default storage class if virt default not available
+  ansible.builtin.set_fact:
+    sno_storage_class: "{{ default_storage_class }}"
+    storage_class_type: "default"
+  when:
+    - storage_class_info.resources | length == 0
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - default_storage_class is defined
+    - default_storage_class != ''
+
+- name: Set storage class type for specified class
+  ansible.builtin.set_fact:
+    storage_class_type: "specified"
+  when: storage_class_info.resources | length > 0
+
+- name: Fail if no storage class available
+  ansible.builtin.fail:
+    msg: "Storage class {{ sno_storage_class }} not found and no default storage class is available"
+  when:
+    - storage_class_info.resources | length == 0
+    - (virt_default_storage_class is not defined or virt_default_storage_class == '')
+    - (default_storage_class is not defined or default_storage_class == '')
+
+- name: Display storage class status
+  ansible.builtin.debug:
+    msg: "Using storage class: {{ sno_storage_class }}{{ ' (' + storage_class_type + ')' if storage_class_type is defined and storage_class_type != 'specified' else '' }}"

@@ -1,0 +1,188 @@
+---
+- name: Attach ISO to VM and start
+  hosts: sno_clusters
+  gather_facts: false
+  tasks:
+    - name: Include prerequisites role
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+
+    - name: Configure VM network
+      ansible.builtin.include_role:
+        name: sno_create_vm
+        tasks_from: configure_network
+
+    - name: Set rootdisk PVC name
+      ansible.builtin.set_fact:
+        sno_rootdisk_pvc_name: "{{ sno_existing_rootdisk_pvc if sno_existing_rootdisk_pvc | default('') != '' else sno_vm_name + '-disk' }}"
+
+    - name: Set secondary disk PVC name
+      ansible.builtin.set_fact:
+        sno_secondary_disk_pvc_name: "{{ sno_existing_secondary_disk_pvc if sno_existing_secondary_disk_pvc | default('') != '' else sno_vm_name + '-disk2' }}"
+      when: sno_add_secondary_disk | default(false) | bool
+
+    - name: Wait for ISO DataVolume to be ready
+      kubernetes.core.k8s_info:
+        api_version: cdi.kubevirt.io/v1beta1
+        kind: DataVolume
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: iso_dv_check
+      until: >
+        (iso_dv_check.resources | length > 0 and
+         iso_dv_check.resources[0].status.phase | default('') == 'Succeeded') or
+        (iso_dv_check.resources | length == 0)
+      retries: 60
+      delay: 30
+
+    - name: Check if ISO PVC exists (when DataVolume is gone)
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ sno_vm_name }}-iso"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: iso_pvc_check
+
+    - name: Verify ISO PVC is bound
+      ansible.builtin.fail:
+        msg: "ISO PVC does not exist or is not bound"
+      when:
+        - iso_pvc_check.resources | length == 0 or iso_pvc_check.resources[0].status.phase != 'Bound'
+
+    - name: Display ISO PVC status
+      ansible.builtin.debug:
+        msg: "ISO PVC is bound: {{ iso_pvc_check.resources[0].metadata.name }} ({{ iso_pvc_check.resources[0].status.phase }})"
+
+    - name: Build VM disks list for ISO attachment
+      ansible.builtin.set_fact:
+        sno_vm_disks_with_iso:
+          - name: rootdisk
+            bootOrder: 1
+            disk:
+              bus: virtio
+
+    - name: Add secondary disk to disks list
+      ansible.builtin.set_fact:
+        sno_vm_disks_with_iso: "{{ sno_vm_disks_with_iso + [{'name': 'disk2', 'disk': {'bus': 'virtio'}}] }}"
+      when: sno_add_secondary_disk | default(false) | bool
+
+    - name: Add ISO to disks list
+      ansible.builtin.set_fact:
+        sno_vm_disks_with_iso: "{{ sno_vm_disks_with_iso + [{'name': 'installation-cdrom', 'bootOrder': 2, 'cdrom': {'bus': 'sata'}}] }}"
+
+    - name: Build VM volumes list for ISO attachment
+      ansible.builtin.set_fact:
+        sno_vm_volumes_with_iso:
+          - name: rootdisk
+            persistentVolumeClaim:
+              claimName: "{{ sno_rootdisk_pvc_name }}"
+
+    - name: Add secondary disk to volumes list
+      ansible.builtin.set_fact:
+        sno_vm_volumes_with_iso: "{{ sno_vm_volumes_with_iso + [{'name': 'disk2', 'persistentVolumeClaim': {'claimName': sno_secondary_disk_pvc_name}}] }}"
+      when: sno_add_secondary_disk | default(false) | bool
+
+    - name: Add ISO to volumes list
+      ansible.builtin.set_fact:
+        sno_vm_volumes_with_iso: "{{ sno_vm_volumes_with_iso + [{'name': 'installation-cdrom', 'persistentVolumeClaim': {'claimName': sno_vm_name + '-iso'}}] }}"
+
+    - name: Attach ISO to VirtualMachine
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+        state: present
+        definition:
+          spec:
+            running: false
+            template:
+              metadata:
+                labels:
+                  kubevirt.io/vm: "{{ sno_vm_name }}"
+                  app: sno-cluster
+              spec:
+                domain:
+                  cpu:
+                    cores: "{{ sno_vm_cores }}"
+                    sockets: "{{ sno_vm_sockets }}"
+                    threads: "{{ sno_vm_threads }}"
+                  resources:
+                    requests:
+                      memory: "{{ sno_vm_memory }}"
+                  devices:
+                    disks: "{{ sno_vm_disks_with_iso }}"
+                    interfaces: "{{ sno_vm_interfaces }}"
+                networks: "{{ sno_vm_networks }}"
+                volumes: "{{ sno_vm_volumes_with_iso }}"
+      args: "{{ k8s_auth_params }}"
+      register: vm_attach_result
+      until: vm_attach_result is succeeded
+      retries: 5
+      delay: 10
+
+    - name: Start the VirtualMachine
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+        state: present
+        definition:
+          spec:
+            running: true
+      args: "{{ k8s_auth_params }}"
+      register: vm_start_result
+      until: vm_start_result is succeeded
+      retries: 5
+      delay: 10
+
+    - name: Wait for VM to be ready
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: vm_info
+      until:
+        - vm_info.resources | length > 0
+        - vm_info.resources[0].status.ready | default(false) == true
+      retries: 60
+      delay: 10
+
+    - name: Get VirtualMachineInstance details
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        name: "{{ sno_vm_name }}"
+        namespace: "{{ sno_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: vmi_info
+
+    - name: Display VM status
+      ansible.builtin.debug:
+        msg:
+          - "Virtual Machine started with embedded ISO"
+          - "VM Name: {{ sno_vm_name }}"
+          - "Namespace: {{ sno_namespace }}"
+          - "Status: {{ vm_info.resources[0].status.printableStatus | default('Unknown') }}"
+
+    - name: Include installation monitoring role
+      ansible.builtin.include_role:
+        name: sno_monitor_installation
+
+    - name: Display cluster access information
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "SNO Cluster Installation Complete!"
+          - "Cluster Name: {{ sno_cluster_name }}"
+          - "Base Domain: {{ sno_base_domain }}"
+          - "API URL: https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443"
+          - "Console URL: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}"
+          - "=========================================="
+      when: installation_complete | default(false)
+

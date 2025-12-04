@@ -1,0 +1,169 @@
+---
+- name: Configure VM network settings
+  ansible.builtin.include_tasks: configure_network.yml
+
+- name: Skip ISO DataVolume creation (will be uploaded after ignition embedding)
+  ansible.builtin.debug:
+    msg: "ISO DataVolume will be created and uploaded after ignition embedding"
+
+- name: Set rootdisk PVC name
+  ansible.builtin.set_fact:
+    sno_rootdisk_pvc_name: "{{ sno_existing_rootdisk_pvc if sno_existing_rootdisk_pvc != '' else sno_vm_name + '-disk' }}"
+
+- name: Verify existing rootdisk PVC exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ sno_existing_rootdisk_pvc }}"
+    namespace: "{{ sno_namespace }}"
+  args: "{{ k8s_auth_params }}"
+  register: existing_pvc_info
+  when: sno_existing_rootdisk_pvc != ''
+
+- name: Fail if existing PVC not found
+  ansible.builtin.fail:
+    msg: "Existing PVC {{ sno_existing_rootdisk_pvc }} not found in namespace {{ sno_namespace }}"
+  when:
+    - sno_existing_rootdisk_pvc != ''
+    - existing_pvc_info.resources | length == 0
+
+- name: Display rootdisk configuration
+  ansible.builtin.debug:
+    msg: "{{ 'Using existing PVC: ' + sno_existing_rootdisk_pvc if sno_existing_rootdisk_pvc != '' else 'Creating new PVC: ' + sno_vm_name + '-disk' }}"
+
+- name: Create PVC for SNO OS disk
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ sno_vm_name }}-disk"
+    namespace: "{{ sno_namespace }}"
+    state: present
+    definition:
+      spec:
+        accessModes:
+          - "{{ sno_pvc_access_mode }}"
+        resources:
+          requests:
+            storage: "{{ sno_vm_disk_size }}"
+        storageClassName: "{{ sno_storage_class }}"
+  args: "{{ k8s_auth_params }}"
+  when: sno_existing_rootdisk_pvc == ''
+
+- name: Set secondary disk PVC name
+  ansible.builtin.set_fact:
+    sno_secondary_disk_pvc_name: "{{ sno_existing_secondary_disk_pvc if sno_existing_secondary_disk_pvc | default('') != '' else sno_vm_name + '-disk2' }}"
+  when: sno_add_secondary_disk | default(false) | bool
+
+- name: Verify existing secondary disk PVC exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ sno_existing_secondary_disk_pvc }}"
+    namespace: "{{ sno_namespace }}"
+  args: "{{ k8s_auth_params }}"
+  register: existing_secondary_pvc_info
+  when:
+    - sno_add_secondary_disk | default(false) | bool
+    - sno_existing_secondary_disk_pvc | default('') != ''
+
+- name: Fail if existing secondary PVC not found
+  ansible.builtin.fail:
+    msg: "Existing secondary PVC {{ sno_existing_secondary_disk_pvc }} not found in namespace {{ sno_namespace }}"
+  when:
+    - sno_add_secondary_disk | default(false) | bool
+    - sno_existing_secondary_disk_pvc | default('') != ''
+    - existing_secondary_pvc_info.resources | length == 0
+
+- name: Create PVC for secondary disk
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ sno_vm_name }}-disk2"
+    namespace: "{{ sno_namespace }}"
+    state: present
+    definition:
+      spec:
+        accessModes:
+          - "{{ sno_pvc_access_mode }}"
+        resources:
+          requests:
+            storage: "{{ sno_secondary_disk_size }}"
+        storageClassName: "{{ sno_storage_class }}"
+  args: "{{ k8s_auth_params }}"
+  when:
+    - sno_add_secondary_disk | default(false) | bool
+    - sno_existing_secondary_disk_pvc | default('') == ''
+
+- name: Display secondary disk configuration
+  ansible.builtin.debug:
+    msg: "{{ 'Using existing secondary disk PVC: ' + sno_existing_secondary_disk_pvc if sno_existing_secondary_disk_pvc | default('') != '' else 'Creating new secondary disk PVC: ' + sno_vm_name + '-disk2' }}"
+  when: sno_add_secondary_disk | default(false) | bool
+
+- name: Build VM disks list
+  ansible.builtin.set_fact:
+    sno_vm_disks:
+      - name: rootdisk
+        bootOrder: 1
+        disk:
+          bus: virtio
+
+- name: Add secondary disk to disks list
+  ansible.builtin.set_fact:
+    sno_vm_disks: "{{ sno_vm_disks + [{'name': 'disk2', 'disk': {'bus': 'virtio'}}] }}"
+  when: sno_add_secondary_disk | default(false) | bool
+
+- name: Build VM volumes list
+  ansible.builtin.set_fact:
+    sno_vm_volumes:
+      - name: rootdisk
+        persistentVolumeClaim:
+          claimName: "{{ sno_rootdisk_pvc_name }}"
+
+- name: Add secondary disk to volumes list
+  ansible.builtin.set_fact:
+    sno_vm_volumes: "{{ sno_vm_volumes + [{'name': 'disk2', 'persistentVolumeClaim': {'claimName': sno_secondary_disk_pvc_name}}] }}"
+  when: sno_add_secondary_disk | default(false) | bool
+
+- name: Create VirtualMachine for SNO (without ISO attached)
+  kubernetes.core.k8s:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ sno_vm_name }}"
+    namespace: "{{ sno_namespace }}"
+    state: present
+    definition:
+      spec:
+        running: false
+        template:
+          metadata:
+            labels:
+              kubevirt.io/vm: "{{ sno_vm_name }}"
+              app: sno-cluster
+          spec:
+            domain:
+              cpu:
+                cores: "{{ sno_vm_cores }}"
+                sockets: "{{ sno_vm_sockets }}"
+                threads: "{{ sno_vm_threads }}"
+              resources:
+                requests:
+                  memory: "{{ sno_vm_memory }}"
+              devices:
+                disks: "{{ sno_vm_disks }}"
+                interfaces: "{{ sno_vm_interfaces }}"
+            networks: "{{ sno_vm_networks }}"
+            volumes: "{{ sno_vm_volumes }}"
+  args: "{{ k8s_auth_params }}"
+  register: vm_create_result
+  until: vm_create_result is succeeded
+  retries: 5
+  delay: 10
+
+- name: Display VM creation status
+  ansible.builtin.debug:
+    msg:
+      - "Virtual Machine created successfully (without ISO)"
+      - "VM Name: {{ sno_vm_name }}"
+      - "Namespace: {{ sno_namespace }}"
+      - "ISO will be attached after embedding and upload complete"
+

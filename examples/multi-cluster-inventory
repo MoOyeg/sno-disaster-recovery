@@ -1,0 +1,12 @@
+---
+# Example inventory for multi-cluster deployment
+[sno_clusters]
+sno-dev-01
+sno-dev-02
+sno-test-01
+
+[sno_clusters:vars]
+sno_base_domain=lab.example.com
+sno_namespace=sno-clusters
+sno_storage_class=ocs-storagecluster-ceph-rbd
+openshift_api_url=https://api.ocp.example.com:6443

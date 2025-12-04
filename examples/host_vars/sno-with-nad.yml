@@ -1,0 +1,20 @@
+---
+# Example: SNO cluster using custom NetworkAttachmentDefinition
+sno_cluster_name: "sno-prod-01"
+sno_base_domain: "prod.example.com"
+sno_namespace: "sno-production"
+
+# VM Resources
+sno_vm_cores: 16
+sno_vm_memory: "64Gi"
+sno_vm_disk_size: "200Gi"
+
+# Custom network using NetworkAttachmentDefinition
+# This assumes you have a NAD created in your cluster
+sno_network_attachment_definition: "sno-production/vlan100-network"
+
+# Optional: Set specific MAC address
+sno_vm_mac_address: "52:54:00:11:22:33"
+
+# OpenShift version
+sno_openshift_version: "4.20.2"

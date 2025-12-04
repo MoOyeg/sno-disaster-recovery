@@ -1,0 +1,40 @@
+# Sensitive files
+pull-secret.json
+ssh-key.pub
+*.pem
+*.key
+!.gitkeep
+
+# Ansible artifacts
+artifacts/
+credentials/
+*.retry
+/tmp/
+/collections/
+
+# Installation directories
+/tmp/sno-install-*/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Container/Podman
+.buildah/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+app/target/*
+inventory/host_vars/sno-cluster2.yml
+inventory/host_vars/sno-cluster.yml
