@@ -1,5 +1,4 @@
 ---
-Create PVC with another method
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
