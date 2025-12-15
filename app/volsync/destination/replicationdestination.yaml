@@ -3,7 +3,7 @@ apiVersion: volsync.backube/v1alpha1
 kind: ReplicationDestination
 metadata:
   name: mysql-replicationdestination
-  namespace: quarkus-mysql-app
+  namespace: quarkus-web-app
 spec:
   trigger:
     schedule: "*/5 * * * *"

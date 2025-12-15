@@ -808,6 +808,78 @@
                       sourceNamespace: openshift-marketplace
       args: "{{ k8s_auth_params }}"
 
+    - name: Create Policy for MetalLB Instance
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: configure-metallb-instance
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: metallb-instance
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: metallb.io/v1beta1
+                          kind: MetalLB
+                          metadata:
+                            name: metallb
+                            namespace: metallb-system
+                          spec: {}
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create Policy for MetalLB L2Advertisement
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: configure-metallb-l2advertisement
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: metallb-l2advertisement
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: metallb.io/v1beta1
+                          kind: L2Advertisement
+                          metadata:
+                            name: l2advertisement
+                            namespace: metallb-system
+                          spec: {}
+      args: "{{ k8s_auth_params }}"
+
     - name: Create Policy for MetalLB IPAddressPool per cluster
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
@@ -989,6 +1061,42 @@
               apiGroup: policy.open-cluster-management.io
       args: "{{ k8s_auth_params }}"
 
+    - name: Create PlacementBinding for MetalLB Instance Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: binding-metallb-instance
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          placementRef:
+            name: sno-clusters-placement
+            kind: Placement
+            apiGroup: cluster.open-cluster-management.io
+          subjects:
+            - name: configure-metallb-instance
+              kind: Policy
+              apiGroup: policy.open-cluster-management.io
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create PlacementBinding for MetalLB L2Advertisement Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: binding-metallb-l2advertisement
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          placementRef:
+            name: sno-clusters-placement
+            kind: Placement
+            apiGroup: cluster.open-cluster-management.io
+          subjects:
+            - name: configure-metallb-l2advertisement
+              kind: Policy
+              apiGroup: policy.open-cluster-management.io
+      args: "{{ k8s_auth_params }}"
+
     - name: Enable Submariner if MetalLB subnets are not shared
       when:
         - metallb_subnets_shared is defined
@@ -1060,6 +1168,8 @@
           - "PolicySet: sno-operators-policyset"
           - "Policies:"
           - "  - install-metallb-operator"
+          - "  - configure-metallb-instance (MetalLB CR)"
+          - "  - configure-metallb-l2advertisement (L2Advertisement)"
           - "  - install-lvm-storage-operator"
           - "  - install-openshift-gitops-operator"
           - "{{ '  - configure-metallb-' + sno_cluster_name + ' (IPAddressPool)' if metallb_ip_address_ranges | default([]) | length > 0 else '' }}"

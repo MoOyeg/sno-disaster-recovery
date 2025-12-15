@@ -4,7 +4,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: mysql-pvc
-  namespace: quarkus-mysql-app
+  namespace: quarkus-web-app
 spec:
   accessModes:
     - ReadWriteOnce

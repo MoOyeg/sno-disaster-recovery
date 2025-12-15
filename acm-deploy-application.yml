@@ -6,7 +6,7 @@
   
   vars:
     acm_namespace: "open-cluster-management"
-    application_namespace: "quarkus-mysql-app"
+    application_namespace: "quarkus-web-app"
     git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
     git_repo_branch: "main"
     git_repo_path: "app/openshift"
@@ -491,7 +491,7 @@
                 source:
                   repoURL: "{{ git_repo_url }}"
                   targetRevision: "{{ git_repo_branch }}"
-                  path: app/destination/volsync
+                  path: app/volsync/destination
                 destination:
                   server: "{{ '{{server}}' }}"
                   namespace: "{{ application_namespace }}"
