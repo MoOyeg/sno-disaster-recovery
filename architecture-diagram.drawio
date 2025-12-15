@@ -14,7 +14,7 @@
         </mxCell>
         
         <!-- ACM -->
-        <mxCell id="acm" value="&lt;b&gt;Advanced Cluster Management&lt;/b&gt;&lt;br&gt;(ACM Hub)&lt;br&gt;&lt;br&gt;• Policy Management&lt;br&gt;• Cluster Lifecycle&lt;br&gt;• Application Deployment&lt;br&gt;• Submariner Broker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;" vertex="1" parent="1">
+        <mxCell id="acm" value="&lt;b&gt;Advanced Cluster Management&lt;/b&gt;&lt;br&gt;(ACM Hub)&lt;br&gt;&lt;br&gt;• Policy Management&lt;br&gt;• Cluster Lifecycle&lt;br&gt;• Application Deployment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;" vertex="1" parent="1">
           <mxGeometry x="80" y="100" width="200" height="180" as="geometry" />
         </mxCell>
         
@@ -58,7 +58,7 @@
         <mxCell id="sno1-operators" value="&lt;b&gt;Infrastructure Operators&lt;/b&gt;&lt;br&gt;(Deployed via ACM Policy)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="60" y="460" width="340" height="260" as="geometry" />
         </mxCell>
-        <mxCell id="sno1-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.1.100-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="sno1-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.1.100-110&lt;br&gt;(Same L3 Network)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="80" y="500" width="140" height="60" as="geometry" />
         </mxCell>
         <mxCell id="sno1-localstorage" value="&lt;b&gt;Local Storage&lt;/b&gt;&lt;br&gt;Device: /dev/vdb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
@@ -70,12 +70,12 @@
         <mxCell id="sno1-gitops" value="&lt;b&gt;OpenShift GitOps&lt;/b&gt;&lt;br&gt;ArgoCD Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="240" y="580" width="140" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="sno1-submariner" value="&lt;b&gt;Submariner Gateway&lt;/b&gt;&lt;br&gt;(If subnets differ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="80" y="660" width="300" height="40" as="geometry" />
+        <mxCell id="sno1-volsync" value="&lt;b&gt;VolSync Operator&lt;/b&gt;&lt;br&gt;Replication Controller" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="660" width="140" height="40" as="geometry" />
         </mxCell>
         
         <!-- Application - SNO1 -->
-        <mxCell id="sno1-app" value="&lt;b&gt;Application Namespace&lt;/b&gt;&lt;br&gt;(quarkus-mysql-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="sno1-app" value="&lt;b&gt;Application Namespace (Active)&lt;/b&gt;&lt;br&gt;(quarkus-web-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="60" y="740" width="340" height="390" as="geometry" />
         </mxCell>
         <mxCell id="sno1-route" value="&lt;b&gt;Route&lt;/b&gt;&lt;br&gt;TLS Edge Termination&lt;br&gt;MetalLB IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
@@ -87,18 +87,21 @@
         <mxCell id="sno1-mysql" value="&lt;b&gt;MySQL 8.0&lt;/b&gt;&lt;br&gt;StatefulSet&lt;br&gt;&lt;br&gt;• Persistent Volume&lt;br&gt;• 1Gi Storage&lt;br&gt;• Headless Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="240" y="860" width="140" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="sno1-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;Local Storage Class" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="sno1-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;LVM Storage Class (lvms-vg1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="80" y="1000" width="300" height="60" as="geometry" />
         </mxCell>
         <mxCell id="sno1-secret" value="&lt;b&gt;Secret&lt;/b&gt;&lt;br&gt;MySQL Credentials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="80" y="1070" width="300" height="40" as="geometry" />
+          <mxGeometry x="80" y="1070" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-volsync-source" value="&lt;b&gt;ReplicationSource&lt;/b&gt;&lt;br&gt;rsync-tls (every 5 min)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="240" y="1070" width="140" height="40" as="geometry" />
         </mxCell>
         
         <!-- Infrastructure Operators - SNO2 -->
         <mxCell id="sno2-operators" value="&lt;b&gt;Infrastructure Operators&lt;/b&gt;&lt;br&gt;(Deployed via ACM Policy)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="830" y="460" width="340" height="260" as="geometry" />
         </mxCell>
-        <mxCell id="sno2-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.2.100-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="sno2-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.1.200-210&lt;br&gt;(Same L3 Network)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="850" y="500" width="140" height="60" as="geometry" />
         </mxCell>
         <mxCell id="sno2-localstorage" value="&lt;b&gt;Local Storage&lt;/b&gt;&lt;br&gt;Device: /dev/vdb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
@@ -110,12 +113,12 @@
         <mxCell id="sno2-gitops" value="&lt;b&gt;OpenShift GitOps&lt;/b&gt;&lt;br&gt;ArgoCD Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="1010" y="580" width="140" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="sno2-submariner" value="&lt;b&gt;Submariner Gateway&lt;/b&gt;&lt;br&gt;(If subnets differ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
-          <mxGeometry x="850" y="660" width="300" height="40" as="geometry" />
+        <mxCell id="sno2-volsync" value="&lt;b&gt;VolSync Operator&lt;/b&gt;&lt;br&gt;Replication Controller" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="660" width="140" height="40" as="geometry" />
         </mxCell>
         
         <!-- Application - SNO2 -->
-        <mxCell id="sno2-app" value="&lt;b&gt;Application Namespace&lt;/b&gt;&lt;br&gt;(quarkus-mysql-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="sno2-app" value="&lt;b&gt;Application Namespace (Standby)&lt;/b&gt;&lt;br&gt;(quarkus-web-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="830" y="740" width="340" height="390" as="geometry" />
         </mxCell>
         <mxCell id="sno2-route" value="&lt;b&gt;Route&lt;/b&gt;&lt;br&gt;TLS Edge Termination&lt;br&gt;MetalLB IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
@@ -127,11 +130,14 @@
         <mxCell id="sno2-mysql" value="&lt;b&gt;MySQL 8.0&lt;/b&gt;&lt;br&gt;StatefulSet&lt;br&gt;&lt;br&gt;• Persistent Volume&lt;br&gt;• 1Gi Storage&lt;br&gt;• Headless Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="1010" y="860" width="140" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="sno2-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;Local Storage Class" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="sno2-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;LVM Storage Class (lvms-vg1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="850" y="1000" width="300" height="60" as="geometry" />
         </mxCell>
         <mxCell id="sno2-secret" value="&lt;b&gt;Secret&lt;/b&gt;&lt;br&gt;MySQL Credentials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
-          <mxGeometry x="850" y="1070" width="300" height="40" as="geometry" />
+          <mxGeometry x="850" y="1070" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-volsync-dest" value="&lt;b&gt;ReplicationDestination&lt;/b&gt;&lt;br&gt;rsync-tls LoadBalancer&lt;br&gt;(MetalLB IP: 192.168.1.200)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="1070" width="140" height="60" as="geometry" />
         </mxCell>
         
         <!-- GitHub Repository -->
@@ -222,18 +228,6 @@
           </mxGeometry>
         </mxCell>
         
-        <mxCell id="arrow7" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#CC0000;startArrow=classic;startFill=1;dashed=1;" edge="1" parent="1" source="sno1-submariner" target="sno2-submariner">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="380" y="680" as="sourcePoint" />
-            <mxPoint x="850" y="680" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="arrow7-label" value="Submariner Gateway (IPSec Tunnel)" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontStyle=1" vertex="1" connectable="0" parent="arrow7">
-          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
-            <mxPoint y="-11" as="offset" />
-          </mxGeometry>
-        </mxCell>
-        
         <mxCell id="arrow8" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#009900;" edge="1" parent="1" source="sno1-quarkus" target="sno1-mysql">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="220" y="920" as="sourcePoint" />
@@ -258,9 +252,21 @@
           </mxGeometry>
         </mxCell>
         
+        <mxCell id="arrow10" value="" style="endArrow=classic;html=1;strokeWidth=4;strokeColor=#9900CC;startArrow=none;startFill=0;" edge="1" parent="1" source="sno1-volsync-source" target="sno2-volsync-dest">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="380" y="1090" as="sourcePoint" />
+            <mxPoint x="1010" y="1090" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow10-label" value="VolSync Replication (rsync-tls)&lt;br&gt;MySQL PVC Snapshots - Every 5 Minutes" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontStyle=1" vertex="1" connectable="0" parent="arrow10">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint y="-21" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
         <!-- Legend -->
         <mxCell id="legend" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="1220" y="640" width="320" height="510" as="geometry" />
+          <mxGeometry x="1220" y="640" width="320" height="630" as="geometry" />
         </mxCell>
         <mxCell id="legend-title" value="&lt;b&gt;Legend&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
           <mxGeometry x="1220" y="650" width="320" height="30" as="geometry" />
@@ -321,16 +327,6 @@
           <mxGeometry x="1290" y="930" width="230" height="30" as="geometry" />
         </mxCell>
         
-        <mxCell id="legend-submariner-flow" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#CC0000;dashed=1;" edge="1" parent="1">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="1240" y="985" as="sourcePoint" />
-            <mxPoint x="1280" y="985" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="legend-submariner-flow-text" value="Submariner IPSec Tunnel" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="1290" y="970" width="230" height="30" as="geometry" />
-        </mxCell>
-        
         <mxCell id="legend-app-flow" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#009900;" edge="1" parent="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
             <mxPoint x="1240" y="1025" as="sourcePoint" />
@@ -341,12 +337,36 @@
           <mxGeometry x="1290" y="1010" width="230" height="30" as="geometry" />
         </mxCell>
         
+        <mxCell id="legend-volsync-flow" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#9900CC;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1240" y="1065" as="sourcePoint" />
+            <mxPoint x="1280" y="1065" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-volsync-flow-text" value="VolSync Replication (rsync-tls)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="1050" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-volsync-source" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1090" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-volsync-source-text" value="VolSync ReplicationSource" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="1090" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-volsync-dest" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1130" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-volsync-dest-text" value="VolSync ReplicationDestination" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="1130" width="230" height="30" as="geometry" />
+        </mxCell>
+        
         <!-- Key Features Box -->
         <mxCell id="features-title" value="&lt;b&gt;Key Features:&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1" vertex="1" parent="1">
-          <mxGeometry x="1240" y="1050" width="280" height="20" as="geometry" />
+          <mxGeometry x="1240" y="1170" width="280" height="20" as="geometry" />
         </mxCell>
-        <mxCell id="features-text" value="• Automated operator deployment via ACM&lt;br&gt;• GitOps-based application deployment&lt;br&gt;• Intelligent Submariner routing&lt;br&gt;• MetalLB for LoadBalancer IPs&lt;br&gt;• Local &amp;amp; LVM storage provisioning&lt;br&gt;• Quarkus + MySQL stack&lt;br&gt;• Disaster Recovery ready" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
-          <mxGeometry x="1240" y="1070" width="280" height="70" as="geometry" />
+        <mxCell id="features-text" value="• Automated operator deployment via ACM&lt;br&gt;• GitOps-based application deployment&lt;br&gt;• VolSync DR replication (rsync-tls)&lt;br&gt;• Active-Standby cluster configuration&lt;br&gt;• MetalLB for LoadBalancer IPs&lt;br&gt;• Local &amp;amp; LVM storage provisioning&lt;br&gt;• Quarkus + MySQL stack&lt;br&gt;• Snapshot-based PVC replication&lt;br&gt;• 5-minute replication schedule" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1190" width="280" height="70" as="geometry" />
         </mxCell>
         
       </root>

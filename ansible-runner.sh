@@ -297,7 +297,6 @@ Usage: $0 <command> [options]
 Commands:
     build           Build the Ansible container image
     deploy          Deploy SNO cluster on OpenShift Virtualization
-    deployaws       Deploy SNO cluster on AWS
     destroy         Destroy SNO cluster
     acm             Import deployed cluster into ACM
     operators       Deploy operators to SNO clusters via ACM policies
@@ -318,8 +317,6 @@ Examples:
     $0 build
     $0 deploy
     $0 deploy --limit sno-cluster-01 -v
-    $0 deployaws
-    $0 deployaws --limit sno-cluster-01
     $0 destroy
     $0 operators
     $0 deleteoperators
@@ -332,9 +329,6 @@ Environment Variables:
     OPENSHIFT_TOKEN         OpenShift API token (Option 1)
     KUBECONFIG              Path to kubeconfig file (Option 2 - Recommended)
     ASSISTED_OFFLINE_TOKEN  Red Hat Assisted Installer token (optional)
-    AWS_ACCESS_KEY_ID       AWS access key (for AWS deployment)
-    AWS_SECRET_ACCESS_KEY   AWS secret key (for AWS deployment)
-    AWS_PROFILE             AWS profile name (alternative to access keys)
 
 Authentication:
     The script will use kubeconfig if available (checked in order):
@@ -357,12 +351,6 @@ case "${1:-}" in
         build_image
         shift
         run_ansible "deploy-sno.yml" "$@"
-        ;;
-    
-    deployaws)
-        build_image
-        shift
-        run_ansible "deploy-sno-aws.yml" "$@"
         ;;
     
     destroy)

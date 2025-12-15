@@ -4,6 +4,8 @@ kind: PersistentVolumeClaim
 metadata:
   name: mysql-pvc
   namespace: quarkus-web-app
+  labels:
+    app: quarkus-mysql-app
 spec:
   accessModes:
     - ReadWriteOnce

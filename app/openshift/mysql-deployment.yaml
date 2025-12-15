@@ -5,18 +5,18 @@ metadata:
   name: mysql
   namespace: quarkus-web-app
   labels:
-    app: mysql
+    app: quarkus-mysql-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: mysql
+      app: quarkus-mysql-app
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: mysql
+        app: quarkus-mysql-app
     spec:
       containers:
       - name: mysql
@@ -72,11 +72,11 @@ metadata:
   name: mysql
   namespace: quarkus-web-app
   labels:
-    app: mysql
+    app: quarkus-mysql-app
 spec:
   ports:
   - port: 3306
     targetPort: 3306
   selector:
-    app: mysql
+    app: quarkus-mysql-app
   clusterIP: None

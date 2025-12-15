@@ -118,10 +118,10 @@ curl http://<loadbalancer-ip>:8080/tasks
 ```
 
 The LoadBalancer service enables:
-- Cross-cluster access via Submariner
 - External access from outside the cluster
 - Disaster recovery traffic routing
-- Load balancing across cluster boundaries
+- Direct access for VolSync replication
+- Load balancing for production workloads
 
 
 ## Testing the API

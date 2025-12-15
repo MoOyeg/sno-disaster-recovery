@@ -459,9 +459,9 @@
                   labelSelector:
                     matchExpressions:
                       - key: app-role
-                        operator: NotIn
+                        operator: In
                         values:
-                          - standby
+                          - active
       args: "{{ k8s_auth_params }}"
     
     - name: Create Placement for SNO clusters
