@@ -1,0 +1,17 @@
+---
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationDestination
+metadata:
+  name: mysql-replicationdestination
+  namespace: quarkus-mysql-app
+spec:
+  trigger:
+    schedule: "*/5 * * * *"
+  rsyncTLS:
+    serviceType: LoadBalancer
+    copyMethod: Snapshot
+    capacity: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: lvms-vg1
+    volumeSnapshotClassName: lvms-vg1

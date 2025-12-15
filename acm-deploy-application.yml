@@ -389,12 +389,34 @@
                       cluster-type: sno
       args: "{{ k8s_auth_params }}"
     
+    - name: Create Placement for standby SNO clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement-standby
+        namespace: openshift-gitops
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app-role
+                        operator: In
+                        values:
+                          - standby
+      args: "{{ k8s_auth_params }}"
+    
     - name: Create ApplicationSet for Quarkus MySQL App
       kubernetes.core.k8s:
         api_version: argoproj.io/v1alpha1
         kind: ApplicationSet
         name: quarkus-mysql-appset
         namespace: openshift-gitops
+        state: present
         definition:
           spec:
             generators:
@@ -407,19 +429,69 @@
             template:
               metadata:
                 annotations:
-                  apps.open-cluster-management.io/ocm-managed-cluster: '{{name}}'
+                  apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
                   apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
                   argocd.argoproj.io/skip-reconcile: "true"
                 labels:
                   apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
                   velero.io/exclude-from-backup: 'true'
-                name: quarkus-web-app-{{name}}
+                name: "quarkus-web-app-{{ '{{name}}' }}"
               spec:
                 project: default
                 sources:
                   - repoURL: "{{ git_repo_url }}"
                     targetRevision: "{{ git_repo_branch }}"
                     path: "{{ git_repo_path }}"
+                destination:
+                  server: "{{ '{{server}}' }}"
+                  namespace: "{{ application_namespace }}"
+                syncPolicy:
+                  automated:
+                    prune: true
+                    selfHeal: true
+                  syncOptions:
+                    - CreateNamespace=true
+                    - PruneLast=true
+                  retry:
+                    limit: 5
+                    backoff:
+                      duration: 5s
+                      factor: 2
+                      maxDuration: 3m
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create ApplicationSet for VolSync ReplicationDestination on Standby Clusters
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: volsync-replicationdestination-appset
+        namespace: openshift-gitops
+        state: present
+        definition:
+          spec:
+            generators:
+              - clusterDecisionResource:
+                  configMapRef: acm-placement
+                  labelSelector:
+                    matchLabels:
+                      cluster.open-cluster-management.io/placement: "sno-app-placement-standby"
+                  requeueAfterSeconds: 180
+            template:
+              metadata:
+                annotations:
+                  apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
+                  apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
+                  argocd.argoproj.io/skip-reconcile: "true"
+                labels:
+                  apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  velero.io/exclude-from-backup: 'true'
+                name: "volsync-replicationdestination-{{ '{{name}}' }}"
+              spec:
+                project: default
+                source:
+                  repoURL: "{{ git_repo_url }}"
+                  targetRevision: "{{ git_repo_branch }}"
+                  path: app/destination/volsync
                 destination:
                   server: "{{ '{{server}}' }}"
                   namespace: "{{ application_namespace }}"
@@ -450,6 +522,18 @@
       retries: 10
       delay: 5
     
+    - name: Wait for VolSync ApplicationSet to be created
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: volsync-replicationdestination-appset
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: volsync_appset_status
+      until: volsync_appset_status.resources | length > 0
+      retries: 10
+      delay: 5
+    
     - name: Get deployed Applications from ApplicationSet
       kubernetes.core.k8s_info:
         api_version: argoproj.io/v1alpha1
@@ -468,13 +552,18 @@
           - "=========================================="
           - "Application: quarkus-mysql-app"
           - "ApplicationSet: quarkus-mysql-appset"
+          - "VolSync ApplicationSet: volsync-replicationdestination-appset"
           - "Namespace: openshift-gitops"
           - "Git Repository: {{ git_repo_url }}"
-          - "Git Path: {{ git_repo_path }}"
+          - "Git Path (App): {{ git_repo_path }}"
+          - "Git Path (VolSync): app/volsync"
           - "Git Branch: {{ git_repo_branch }}"
           - "Target Namespace: {{ application_namespace }}"
-          - "Placement: sno-app-placement"
-          - "Target: SNO clusters in sno-demo"
+          - ""
+          - "Placements:"
+          - "- Active Cluster: sno-app-placement-active ({{ selected_cluster }})"
+          - "- Standby Clusters: sno-app-placement-standby (VolSync ReplicationDestination)"
+          - "- All SNO Clusters: sno-app-placement"
           - ""
           - "ArgoCD Applications Created:"
           - "{{ argo_apps.resources | map(attribute='metadata.name') | list | join('\n') if argo_apps.resources | length > 0 else 'Waiting for placement decisions...' }}"
@@ -485,11 +574,16 @@
           - "- Policy: gitops-app-namespace-rbac"
           - "- ServiceAccount: openshift-gitops-argocd-application-controller"
           - "- Permissions: Full admin access in {{ application_namespace }}"
+          - ""
+          - "VolSync Configuration:"
+          - "- ReplicationDestination deployed on standby clusters"
+          - "- Service Type: LoadBalancer"
+          - "- Ready for disaster recovery scenarios"
           - "=========================================="
           - ""
           - "Next Steps:"
           - "1. Monitor ArgoCD applications:"
-          - "   oc get applications -n openshift-gitops -l app=quarkus-mysql-app"
+          - "   oc get applications -n openshift-gitops"
           - ""
           - "2. Check RBAC policy status:"
           - "   oc get policy gitops-app-namespace-rbac -n gitops-rbac-policies"
