@@ -962,6 +962,23 @@
                                   deviceSelector:
                                     paths:
                                       - "{{ sno_secondary_disk_device | default('/dev/vdb') }}"
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: lvm-storage-default-storageclass
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: storage.k8s.io/v1
+                          kind: StorageClass
+                          metadata:
+                            name: lvms-vg1
+                            annotations:
+                              storageclass.kubernetes.io/is-default-class: "true"
       args: "{{ k8s_auth_params }}"
       when: sno_secondary_disk_device is defined and sno_secondary_disk_device != ""
 

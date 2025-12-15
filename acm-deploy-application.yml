@@ -560,6 +560,71 @@
                       maxDuration: 3m
       args: "{{ k8s_auth_params }}"
     
+    - name: Wait for ReplicationDestination to be ready on standby clusters
+      ansible.builtin.pause:
+        seconds: 30
+        prompt: "Waiting for ReplicationDestination to be created on standby clusters..."
+    
+    - name: Check if kubeconfig files exist for SNO clusters
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/artifacts/{{ item }}/kubeconfig"
+      register: kubeconfig_files
+      loop: "{{ sno_cluster_list }}"
+    
+    - name: Get ReplicationDestination address from standby cluster
+      kubernetes.core.k8s_info:
+        api_version: volsync.backube/v1alpha1
+        kind: ReplicationDestination
+        name: mysql-replicationdestination
+        namespace: "{{ application_namespace }}"
+        kubeconfig: "{{ playbook_dir }}/artifacts/{{ item }}/kubeconfig"
+      register: replication_dest_info
+      loop: "{{ sno_cluster_list | difference([selected_cluster]) }}"
+      when: 
+        - kubeconfig_files.results | selectattr('item', 'equalto', item) | map(attribute='stat.exists') | first | default(false)
+      failed_when: false
+    
+    - name: Extract ReplicationDestination address
+      ansible.builtin.set_fact:
+        replication_dest_address: "{{ item.resources[0].status.rsyncTLS.address }}"
+      loop: "{{ replication_dest_info.results }}"
+      when:
+        - item.resources is defined
+        - item.resources | length > 0
+        - item.resources[0].status is defined
+        - item.resources[0].status.rsyncTLS is defined
+        - item.resources[0].status.rsyncTLS.address is defined
+      loop_control:
+        label: "{{ item.item | default('skipped') }}"
+    
+    - name: Display ReplicationDestination address
+      ansible.builtin.debug:
+        msg: "ReplicationDestination address found: {{ replication_dest_address }}"
+      when: replication_dest_address is defined
+    
+    - name: Create ReplicationSource on active cluster
+      kubernetes.core.k8s:
+        api_version: volsync.backube/v1alpha1
+        kind: ReplicationSource
+        name: mysql-replicationsource
+        namespace: "{{ application_namespace }}"
+        kubeconfig: "{{ playbook_dir }}/artifacts/{{ selected_cluster }}/kubeconfig"
+        state: present
+        definition:
+          spec:
+            sourcePVC: mysql-pvc
+            trigger:
+              schedule: "*/5 * * * *"
+            rsyncTLS:
+              keySecret: volsync-rsync-tls-mysql-replicationsource
+              address: "{{ replication_dest_address }}"
+              copyMethod: Snapshot
+              storageClassName: lvms-vg1
+              volumeSnapshotClassName: lvms-vg1
+      when:
+        - replication_dest_address is defined
+        - kubeconfig_files.results | selectattr('item', 'equalto', selected_cluster) | map(attribute='stat.exists') | first | default(false)
+    
     - name: Wait for ApplicationSet to be created
       kubernetes.core.k8s_info:
         api_version: argoproj.io/v1alpha1
@@ -643,16 +708,9 @@
           - ""
           - "VolSync Configuration:"
           - "- ReplicationDestination deployed on standby clusters (LoadBalancer)"
-          - "- ReplicationSource deployed on active cluster via ACM Policy"
-          - "- Policy automatically discovers ReplicationDestination address"
+          - "{{ '- ReplicationSource deployed on active cluster with address: ' + replication_dest_address if replication_dest_address is defined else '- ReplicationSource deployment: Waiting for ReplicationDestination address' }}"
           - "- Replication schedule: Every 5 minutes"
           - "- Ready for disaster recovery scenarios"
-          - ""
-          - "ACM Policy Details:"
-          - "- Policy: volsync-replicationsource"
-          - "- Namespace: volsync-policies"
-          - "- Uses template lookup to find ReplicationDestination address"
-          - "- Automatically creates ReplicationSource with correct address"
           - "=========================================="
           - ""
           - "Next Steps:"
@@ -662,17 +720,14 @@
           - "2. Check RBAC policy status:"
           - "   oc get policy gitops-app-namespace-rbac -n gitops-rbac-policies"
           - ""
-          - "3. Check VolSync policy status:"
-          - "   oc get policy volsync-replicationsource -n volsync-policies"
-          - ""
-          - "4. Access ArgoCD UI:"
+          - "3. Access ArgoCD UI:"
           - "   oc get route openshift-gitops-server -n openshift-gitops"
           - ""
-          - "5. Check application on target clusters:"
+          - "4. Check application on target clusters:"
           - "   oc get pods -n {{ application_namespace }}"
           - "   oc get route -n {{ application_namespace }}"
           - ""
-          - "6. Verify VolSync replication:"
+          - "5. Verify VolSync replication:"
           - "   oc get replicationdestination -n {{ application_namespace }}"
           - "   oc get replicationsource -n {{ application_namespace }}"
           - "=========================================="
