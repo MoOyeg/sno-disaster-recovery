@@ -100,10 +100,29 @@ oc apply -f openshift/app-deployment.yaml
 
 ### Access the application
 
+The application is exposed through two services:
+
+1. **OpenShift Route** (internal cluster access):
 ```bash
 # Get the route URL
 oc get route quarkus-mysql-app -o jsonpath='{.spec.host}'
 ```
+
+2. **MetalLB LoadBalancer** (external access for DR):
+```bash
+# Get the LoadBalancer IP
+oc get service quarkus-mysql-app-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+
+# Access via LoadBalancer
+curl http://<loadbalancer-ip>:8080/tasks
+```
+
+The LoadBalancer service enables:
+- Cross-cluster access via Submariner
+- External access from outside the cluster
+- Disaster recovery traffic routing
+- Load balancing across cluster boundaries
+
 
 ## Testing the API
 

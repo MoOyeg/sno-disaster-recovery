@@ -75,9 +75,29 @@ spec:
   - port: 8080
     targetPort: 8080
     protocol: TCP
+    name: http
   selector:
     app: quarkus-mysql-app
   type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quarkus-mysql-app-lb
+  namespace: quarkus-mysql-app
+  labels:
+    app: quarkus-mysql-app
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: "{{ metallb_app_ip | default('') }}"
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: quarkus-mysql-app
+  type: LoadBalancer
 ---
 apiVersion: route.openshift.io/v1
 kind: Route

@@ -1,0 +1,503 @@
+---
+- name: Deploy Quarkus MySQL Application via ACM and ArgoCD
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    acm_namespace: "open-cluster-management"
+    application_namespace: "quarkus-mysql-app"
+    git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
+    git_repo_branch: "main"
+    git_repo_path: "app/openshift"
+    argo_project: "default"
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Get all managed clusters
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+      args: "{{ k8s_auth_params }}"
+      register: managed_clusters
+    
+    - name: Filter SNO clusters (exclude hub)
+      ansible.builtin.set_fact:
+        sno_cluster_list: "{{ managed_clusters.resources | selectattr('metadata.name', '!=', 'local-cluster') | map(attribute='metadata.name') | list }}"
+    
+    - name: Display available SNO clusters
+      ansible.builtin.debug:
+        msg:
+          - "Available SNO clusters:"
+          - "{{ sno_cluster_list | to_nice_json }}"
+    
+    - name: Fail if no SNO clusters found
+      ansible.builtin.fail:
+        msg: "No SNO clusters found. Please deploy SNO clusters first using './ansible-runner.sh deploy' or './ansible-runner.sh deployaws'"
+      when: sno_cluster_list | length == 0
+    
+    - name: Prompt for application source cluster
+      ansible.builtin.pause:
+        prompt: |
+          
+          ==========================================
+          SELECT APPLICATION SOURCE CLUSTER
+          ==========================================
+          
+          Available SNO clusters:
+          {% for cluster in sno_cluster_list %}
+          {{ loop.index }}. {{ cluster }}
+          {% endfor %}
+          
+          Which cluster should be the application source (primary)?
+          Enter cluster name or number [1-{{ sno_cluster_list | length }}]
+      register: cluster_selection
+    
+    - name: Parse cluster selection
+      ansible.builtin.set_fact:
+        selected_cluster: "{{ sno_cluster_list[cluster_selection.user_input | int - 1] if cluster_selection.user_input | int > 0 and cluster_selection.user_input | int <= sno_cluster_list | length else cluster_selection.user_input }}"
+      when: cluster_selection.user_input is defined
+    
+    - name: Validate cluster selection
+      ansible.builtin.fail:
+        msg: "Invalid cluster selection: {{ cluster_selection.user_input }}. Please select from: {{ sno_cluster_list | join(', ') }}"
+      when: selected_cluster not in sno_cluster_list
+    
+    - name: Display selected cluster
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Application source cluster: {{ selected_cluster }}"
+          - "Application will be deployed to all SNO clusters"
+          - "Source cluster will have read-write access"
+          - "Other clusters will replicate the application"
+          - "=========================================="
+    
+    - name: Verify ArgoCD is available on hub cluster
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: ArgoCD
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: argocd_check
+      failed_when: false
+    
+    - name: Display ArgoCD status
+      ansible.builtin.debug:
+        msg: "ArgoCD instances found: {{ argocd_check.resources | length }}"
+      when: argocd_check.resources is defined
+    
+    - name: Fail if ArgoCD is not installed
+      ansible.builtin.fail:
+        msg: "OpenShift GitOps (ArgoCD) is not installed on hub cluster. Run './ansible-runner.sh operators' first to install it."
+      when: argocd_check.resources | length == 0
+
+    
+    - name: Create namespace for application namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ application_namespace }}"
+        state: present
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Role to read PlacementDecisions in application namespace
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: Role
+        name: gitops-placement-reader
+        namespace: "{{ application_namespace }}"
+        state: present
+        definition:
+          rules:
+            - apiGroups: ["cluster.open-cluster-management.io"]
+              resources: ["placementdecisions"]
+              verbs: ["get", "list", "watch"]
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create RoleBinding for GitOps service account
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        name: gitops-placement-reader
+        namespace: "{{ application_namespace }}"
+        state: present
+        definition:
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: gitops-placement-reader
+          subjects:
+            - kind: ServiceAccount
+              name: openshift-gitops-argocd-application-controller
+              namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Label selected cluster as active
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ selected_cluster }}"
+        state: patched
+        definition:
+          metadata:
+            labels:
+              cluster-type: sno
+              app-role: active
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Label other SNO clusters with cluster-type=sno
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+        state: patched
+        definition:
+          metadata:
+            labels:
+              cluster-type: sno
+              app-role: standby
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ sno_cluster_list }}"
+      when: item != selected_cluster
+    
+    - name: Create namespace for GitOps RBAC policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: gitops-rbac-policies
+        state: present
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create ManagedClusterSetBinding for gitops-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSet: sno-demo
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Placement for SNO clusters (for RBAC policy)
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-gitops-rbac-placement
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Policy for GitOps RBAC on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: gitops-app-namespace-rbac
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: AC Access Control
+              policy.open-cluster-management.io/controls: AC-3 Access Enforcement
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-app-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: "{{ application_namespace }}"
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-serviceaccount
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: openshift-gitops
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: ServiceAccount
+                          metadata:
+                            name: openshift-gitops-argocd-application-controller
+                            namespace: openshift-gitops
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-app-namespace-admin-role
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: Role
+                          metadata:
+                            name: gitops-app-admin
+                            namespace: "{{ application_namespace }}"
+                          rules:
+                            - apiGroups: ["*"]
+                              resources: ["*"]
+                              verbs: ["*"]
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-app-namespace-admin-rolebinding
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: RoleBinding
+                          metadata:
+                            name: gitops-app-admin
+                            namespace: "{{ application_namespace }}"
+                          roleRef:
+                            apiGroup: rbac.authorization.k8s.io
+                            kind: Role
+                            name: gitops-app-admin
+                          subjects:
+                            - kind: ServiceAccount
+                              name: openshift-gitops-argocd-application-controller
+                              namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create PlacementBinding for GitOps RBAC Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: gitops-app-namespace-rbac-binding
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-gitops-rbac-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: gitops-app-namespace-rbac
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Wait for Policy to be created and distributed
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: gitops-app-namespace-rbac
+        namespace: gitops-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: policy_status
+      until: policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+    
+    - name: Display RBAC policy status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "GitOps RBAC Policy Created"
+          - "=========================================="
+          - "Policy: gitops-app-namespace-rbac"
+          - "Namespace: gitops-rbac-policies"
+          - "Target: All SNO clusters in sno-demo"
+          - ""
+          - "The policy will ensure:"
+          - "1. Namespace {{ application_namespace }} exists"
+          - "2. ServiceAccount openshift-gitops-argocd-application-controller exists"
+          - "3. Role with full permissions in {{ application_namespace }}"
+          - "4. RoleBinding granting GitOps SA admin access"
+          - "=========================================="
+    
+    - name: Create Placement for active SNO cluster
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement-active
+        namespace: openshift-gitops
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app-role
+                        operator: In
+                        values:
+                          - active
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Placement for SNO clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement
+        namespace: openshift-gitops
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create ApplicationSet for Quarkus MySQL App
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-appset
+        namespace: openshift-gitops
+        definition:
+          spec:
+            generators:
+              - clusterDecisionResource:
+                  configMapRef: acm-placement
+                  labelSelector:
+                    matchLabels:
+                      cluster.open-cluster-management.io/placement: "sno-app-placement-active"
+                  requeueAfterSeconds: 180
+            template:
+              metadata:
+                annotations:
+                  apps.open-cluster-management.io/ocm-managed-cluster: '{{name}}'
+                  apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
+                  argocd.argoproj.io/skip-reconcile: "true"
+                labels:
+                  apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  velero.io/exclude-from-backup: 'true'
+                name: quarkus-web-app-{{name}}
+              spec:
+                project: default
+                sources:
+                  - repoURL: "{{ git_repo_url }}"
+                    targetRevision: "{{ git_repo_branch }}"
+                    path: "{{ git_repo_path }}"
+                destination:
+                  server: "{{ '{{server}}' }}"
+                  namespace: "{{ application_namespace }}"
+                syncPolicy:
+                  automated:
+                    prune: true
+                    selfHeal: true
+                  syncOptions:
+                    - CreateNamespace=true
+                    - PruneLast=true
+                  retry:
+                    limit: 5
+                    backoff:
+                      duration: 5s
+                      factor: 2
+                      maxDuration: 3m
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Wait for ApplicationSet to be created
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-appset
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: appset_status
+      until: appset_status.resources | length > 0
+      retries: 10
+      delay: 5
+    
+    - name: Get deployed Applications from ApplicationSet
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        namespace: openshift-gitops
+        label_selectors:
+          - app=quarkus-mysql-app
+      args: "{{ k8s_auth_params }}"
+      register: argo_apps
+    
+    - name: Display deployment status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "ACM Application Deployment Completed"
+          - "=========================================="
+          - "Application: quarkus-mysql-app"
+          - "ApplicationSet: quarkus-mysql-appset"
+          - "Namespace: openshift-gitops"
+          - "Git Repository: {{ git_repo_url }}"
+          - "Git Path: {{ git_repo_path }}"
+          - "Git Branch: {{ git_repo_branch }}"
+          - "Target Namespace: {{ application_namespace }}"
+          - "Placement: sno-app-placement"
+          - "Target: SNO clusters in sno-demo"
+          - ""
+          - "ArgoCD Applications Created:"
+          - "{{ argo_apps.resources | map(attribute='metadata.name') | list | join('\n') if argo_apps.resources | length > 0 else 'Waiting for placement decisions...' }}"
+          - ""
+          - "Sync Policy: Automatic (prune + selfHeal)"
+          - ""
+          - "RBAC Policy Deployed:"
+          - "- Policy: gitops-app-namespace-rbac"
+          - "- ServiceAccount: openshift-gitops-argocd-application-controller"
+          - "- Permissions: Full admin access in {{ application_namespace }}"
+          - "=========================================="
+          - ""
+          - "Next Steps:"
+          - "1. Monitor ArgoCD applications:"
+          - "   oc get applications -n openshift-gitops -l app=quarkus-mysql-app"
+          - ""
+          - "2. Check RBAC policy status:"
+          - "   oc get policy gitops-app-namespace-rbac -n gitops-rbac-policies"
+          - ""
+          - "3. Access ArgoCD UI:"
+          - "   oc get route openshift-gitops-server -n openshift-gitops"
+          - ""
+          - "4. Check application on target clusters:"
+          - "   oc get pods -n {{ application_namespace }}"
+          - "   oc get route -n {{ application_namespace }}"
+          - "=========================================="

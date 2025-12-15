@@ -1,19 +1,43 @@
-# Single Node OpenShift on OpenShift Virtualization - Ansible Automation
+# Single Node OpenShift - Ansible Automation
 
-This Ansible automation deploys a Single Node OpenShift (SNO) cluster on OpenShift Virtualization using KubeVirt.
+This Ansible automation demonstrates **Disaster Recovery (DR) for applications across two Single Node OpenShift (SNO) clusters** deployed on either OpenShift Virtualization (KubeVirt) or AWS EC2.
+
+## Quick Links
+
+- **[Platform Comparison Guide](docs/PLATFORM-COMPARISON.md)** - Choose between OpenShift Virtualization and AWS
+- **[AWS Quick Start Guide](docs/QUICKSTART-AWS.md)** - Deploy SNO on AWS in under an hour
+- **[Detailed AWS Deployment Guide](docs/AWS-DEPLOYMENT-GUIDE.md)** - Comprehensive AWS setup and troubleshooting
+- **Architecture Diagram** - `architecture-diagram.drawio` (open with draw.io)
+
+## Purpose
+
+This project showcases a complete DR strategy for applications running on edge/remote SNO clusters:
+
+- **Infrastructure as Code**: Automated deployment of two SNO clusters on OpenShift Virtualization or AWS
+- **Application Deployment**: Sample Quarkus web application with MySQL backend for DR testing
+- **Network Connectivity**: Automatic MetalLB subnet analysis and Submariner deployment for cross-cluster communication
+- **Storage Management**: Configurable local storage and LVM operators for persistent data
+- **GitOps Integration**: OpenShift GitOps (Argo CD) for declarative application deployment
+- **Advanced Cluster Management (ACM)**: Centralized policy-based operator and configuration deployment
+- **Multi-Cloud Support**: Deploy SNO on OpenShift Virtualization or AWS for hybrid DR scenarios
 
 ## Overview
 
 This automation handles the complete deployment lifecycle:
 - Prerequisites validation (namespace, storage, secrets)
 - OpenShift installation preparation (install-config, ISO generation)
-- Virtual Machine creation with proper resources
+- **OpenShift Virtualization**: Virtual Machine creation with proper resources
+- **AWS**: EC2 instance provisioning with EBS volumes and networking
 - Installation monitoring and cluster validation
 - Credential extraction and artifact storage
+- ACM policy deployment for operators (MetalLB, Local Storage, LVM, OpenShift GitOps)
+- Intelligent network topology detection and Submariner configuration
 
 ## Prerequisites
 
-### On the Host OpenShift Cluster
+### For OpenShift Virtualization Deployment
+
+#### On the Host OpenShift Cluster
 
 1. **OpenShift Virtualization** installed and configured
 2. **Storage Class** available for persistent volumes (e.g., OCS, NFS)
@@ -21,6 +45,56 @@ This automation handles the complete deployment lifecycle:
    - CPU: 8+ cores available
    - Memory: 32+ GB available
    - Storage: 120+ GB available
+
+### For AWS Deployment
+
+**See [AWS Quick Start Guide](docs/QUICKSTART-AWS.md) for streamlined setup or [Detailed AWS Guide](docs/AWS-DEPLOYMENT-GUIDE.md) for comprehensive instructions.**
+
+#### AWS Account Requirements
+
+1. **AWS Account** with appropriate permissions:
+   - EC2: Launch instances, manage volumes, create Elastic IPs
+   - Route53: Manage DNS records (optional but recommended)
+   - S3: Upload objects (optional for ISO storage)
+   
+2. **AWS Resources**:
+   - **VPC**: Existing VPC with internet connectivity
+   - **Subnet**: Public or private subnet (public recommended for Elastic IP)
+   - **Security Group**: Allow OpenShift ports (6443, 22, 80, 443, 22623)
+   - **EC2 Key Pair**: For SSH access to instances
+   - **RHCOS AMI**: Red Hat CoreOS AMI ID for your region
+     - Find AMIs at: https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/
+     - Example: `ami-xxxxxxxxxxxxxxxxx` (varies by region and version)
+
+3. **AWS Credentials**:
+   ```bash
+   # Option 1: Environment variables
+   export AWS_ACCESS_KEY_ID="your-access-key"
+   export AWS_SECRET_ACCESS_KEY="your-secret-key"
+   
+   # Option 2: AWS Profile
+   export AWS_PROFILE="your-profile-name"
+   
+   # Option 3: Use ~/.aws/credentials (automatically detected)
+   ```
+
+4. **AWS Instance Requirements**:
+   - **Minimum**: m5.2xlarge (8 vCPU, 32 GB RAM)
+   - **Recommended**: m5.4xlarge (16 vCPU, 64 GB RAM)
+   - **Storage**: 120 GB root + 100 GB secondary EBS volumes
+
+5. **AWS Security Group Rules** (example):
+   ```
+   Inbound:
+   - TCP 6443 (API) from your IP or 0.0.0.0/0
+   - TCP 22 (SSH) from your IP
+   - TCP 80 (HTTP) from your IP or 0.0.0.0/0
+   - TCP 443 (HTTPS) from your IP or 0.0.0.0/0
+   - TCP 22623 (MCS) from your IP or cluster CIDR
+   
+   Outbound:
+   - All traffic to 0.0.0.0/0
+   ```
 
 ### On the Control Node (Your Workstation/Bastion)
 
@@ -49,13 +123,13 @@ This automation handles the complete deployment lifecycle:
    - Generate: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa`
    - Save public key as: `ssh-key.pub` in the project directory
 
-3. **OpenShift Access**:
+3. **OpenShift Access** (for ACM integration):
    
    Choose one of these authentication methods:
    
    **Option A: Kubeconfig (Recommended)**
    ```bash
-   # Use existing kubeconfig
+   # Use existing kubeconfig for hub cluster
    export KUBECONFIG=~/.kube/config
    
    # Or place in project directory
@@ -64,8 +138,8 @@ This automation handles the complete deployment lifecycle:
    
    **Option B: API Token**
    ```bash
-   # Login to your OpenShift cluster
-   oc login https://api.your-cluster.example.com:6443
+   # Login to your OpenShift hub cluster
+   oc login https://api.your-hub-cluster.example.com:6443
    
    # Get token
    export OPENSHIFT_TOKEN=$(oc whoami -t)
@@ -93,7 +167,7 @@ sno_cluster_name: "sno-cluster"
 sno_base_domain: "example.com"
 sno_namespace: "sno-clusters"
 
-# VM Specifications
+# VM Specifications (for OpenShift Virtualization)
 sno_vm_cores: 8
 sno_vm_memory: "32Gi"
 sno_vm_disk_size: "120Gi"
@@ -107,6 +181,8 @@ sno_openshift_version: "4.14.8"
 
 ### Per-Cluster Configuration
 
+#### For OpenShift Virtualization
+
 Edit `inventory/host_vars/sno-cluster-01.yml` for cluster-specific settings:
 
 ```yaml
@@ -114,6 +190,33 @@ sno_cluster_name: "sno-cluster-01"
 sno_base_domain: "lab.example.com"
 sno_vm_cores: 16
 sno_vm_memory: "64Gi"
+```
+
+#### For AWS Deployment
+
+Edit `inventory/host_vars/sno-aws-01.yml` (see `inventory/host_vars/sno-aws-example.yml`):
+
+```yaml
+sno_cluster_name: "sno-aws-01"
+sno_base_domain: "example.com"
+
+# AWS Configuration
+aws_region: "us-east-1"
+aws_instance_type: "m5.2xlarge"
+aws_ami_id: "ami-xxxxxxxxxxxxxxxxx"  # RHCOS AMI for your region
+aws_vpc_id: "vpc-xxxxxxxxxxxxxxxxx"
+aws_subnet_id: "subnet-xxxxxxxxxxxxxxxxx"
+aws_security_group_id: "sg-xxxxxxxxxxxxxxxxx"
+aws_key_name: "your-keypair-name"
+
+# Optional: Route53 DNS
+aws_route53_zone: "example.com"
+
+# Optional: Elastic IP
+aws_create_eip: true
+
+# Storage device naming (AWS uses NVMe)
+sno_secondary_disk_device: "/dev/nvme1n1"
 ```
 
 ## Usage
@@ -133,13 +236,12 @@ This will:
 
 ### 2. Prepare Credentials
 
-```bash
-# Option 1: Use kubeconfig (recommended)
-export KUBECONFIG=~/.kube/config
-# OR place kubeconfig in project directory
-cp ~/.kube/config ./kubeconfig
+#### For OpenShift Virtualization
 
-# Option 2: Use OpenShift token
+```bash
+# Hub cluster authentication
+export KUBECONFIG=~/.kube/config
+# OR
 export OPENSHIFT_TOKEN=$(oc whoami -t)
 
 # Ensure pull secret exists
@@ -149,12 +251,30 @@ ls -l pull-secret.json
 ls -l ssh-key.pub
 ```
 
+#### For AWS Deployment
+
+```bash
+# Hub cluster authentication (for ACM integration)
+export KUBECONFIG=~/.kube/config
+
+# AWS credentials
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+# OR
+export AWS_PROFILE="your-profile-name"
+
+# Ensure pull secret and SSH key exist
+ls -l pull-secret.json ssh-key.pub
+```
+
 **Note:** The automation will automatically detect and use kubeconfig if available, otherwise it will fall back to token authentication.
 
 ### 3. Deploy SNO Cluster
 
+#### OpenShift Virtualization Deployment
+
 ```bash
-# Deploy the cluster
+# Deploy cluster on OpenShift Virtualization
 ./ansible-runner.sh deploy
 
 # Deploy specific cluster
@@ -162,12 +282,24 @@ ls -l ssh-key.pub
 
 # Deploy with verbose output
 ./ansible-runner.sh deploy -v
+```
 
-# Run in check mode (dry-run)
-./ansible-runner.sh deploy --check
+#### AWS Deployment
+
+```bash
+# Deploy cluster on AWS
+./ansible-runner.sh deployaws
+
+# Deploy specific cluster
+./ansible-runner.sh deployaws --limit sno-aws-01
+
+# Deploy with verbose output
+./ansible-runner.sh deployaws -v
 ```
 
 ### 4. Monitor Installation
+
+#### OpenShift Virtualization
 
 The playbook will:
 1. Validate prerequisites
@@ -176,6 +308,18 @@ The playbook will:
 4. Boot from installation ISO
 5. Monitor bootstrap and installation progress
 6. Extract credentials when complete
+
+#### AWS
+
+The playbook will:
+1. Validate AWS configuration and credentials
+2. Generate installation files and ISO
+3. Upload ISO to S3 (optional) or use local generation
+4. Create EC2 instance with EBS volumes
+5. Assign Elastic IP (optional)
+6. Create Route53 DNS records (optional)
+7. Monitor API endpoint health
+8. Extract credentials when complete
 
 Installation typically takes 30-60 minutes.
 
@@ -204,17 +348,59 @@ oc get co
 # Password: contents of artifacts/sno-cluster-01/kubeadmin-password
 ```
 
-### 6. Destroy Cluster
+**AWS-specific**: If you configured Route53, DNS records are automatically created. Otherwise, add the Elastic IP to your DNS provider:
+```
+api.<cluster-name>.<base-domain> -> <elastic-ip>
+*.apps.<cluster-name>.<base-domain> -> <elastic-ip>
+```
+
+### 6. Deploy ACM and Operators
+
+After deploying SNO clusters, deploy ACM policies for operator management:
 
 ```bash
-# Delete all cluster resources
+# Deploy ACM policies for infrastructure operators
+./ansible-runner.sh operators
+
+# This will install:
+# - MetalLB operator
+# - Local Storage operator (if secondary disk configured)
+# - LVM Storage operator
+# - OpenShift GitOps operator (on hub and SNO clusters)
+# - Submariner (if MetalLB subnets differ)
+```
+
+### 7. Deploy Applications
+
+Deploy the sample Quarkus MySQL application via ACM and ArgoCD:
+
+```bash
+# Deploy application using GitOps
+./ansible-runner.sh deployapp
+
+# This creates:
+# - ACM Application resource
+# - ArgoCD ApplicationSet
+# - Application deployed to all SNO clusters
+```
+
+### 8. Destroy Cluster
+
+```bash
+# Delete all cluster resources (OpenShift Virtualization)
 ./ansible-runner.sh destroy
 
 # Delete specific cluster
 ./ansible-runner.sh destroy --limit sno-cluster-01
+
+# For AWS clusters, manually delete:
+# - EC2 instances (tagged with cluster name)
+# - EBS volumes (tagged with cluster name)
+# - Elastic IPs (if created)
+# - Route53 records (if created)
 ```
 
-### 7. Advanced Usage
+### 9. Advanced Usage
 
 ```bash
 # Build/rebuild the Ansible container image
@@ -232,7 +418,46 @@ oc get co
 
 ## Advanced Configuration
 
-### Custom Network Configuration
+### Finding RHCOS AMI IDs for AWS
+
+To find the correct RHCOS AMI for your AWS region and OpenShift version:
+
+1. Visit: https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/
+2. Navigate to your OpenShift version (e.g., `4.20/`)
+3. Open `rhcos-aws.json` or check AWS EC2 console under "Public images"
+4. Search for: "Red Hat CoreOS" + your OpenShift version
+
+Example AMI IDs (these change with each RHCOS release):
+```yaml
+# us-east-1 (N. Virginia)
+aws_ami_id: "ami-0123456789abcdef0"
+
+# us-west-2 (Oregon)  
+aws_ami_id: "ami-abcdef0123456789"
+
+# eu-west-1 (Ireland)
+aws_ami_id: "ami-fedcba9876543210"
+```
+
+### AWS Resource Tagging
+
+The automation automatically tags AWS resources for management:
+
+```yaml
+Tags:
+  Name: "{{ sno_cluster_name }}"
+  cluster: "{{ sno_cluster_name }}"
+  openshift-version: "{{ sno_openshift_version }}"
+  managed-by: ansible
+```
+
+Use these tags to:
+- Track costs in AWS Cost Explorer
+- Filter resources in AWS console
+- Create automated cleanup scripts
+- Implement resource policies
+
+### Custom Network Configuration (OpenShift Virtualization)
 
 Use NetworkAttachmentDefinitions for advanced networking:
 
@@ -283,7 +508,7 @@ Edit `roles/sno_prepare_installation/templates/install-config.yaml.j2` to custom
 
 ### Authentication Issues
 
-**Using kubeconfig:**
+**Hub cluster authentication:**
 ```bash
 # Verify kubeconfig is accessible
 echo $KUBECONFIG
@@ -309,17 +534,47 @@ oc whoami
 export OPENSHIFT_TOKEN=$(oc whoami -t)
 ```
 
-### Check VM Status
+**AWS authentication:**
+```bash
+# Verify AWS credentials
+echo $AWS_ACCESS_KEY_ID
+echo $AWS_PROFILE
+
+# Test AWS access
+aws sts get-caller-identity --region us-east-1
+
+# Inside container
+./ansible-runner.sh shell
+env | grep AWS
+```
+
+### Check VM Status (OpenShift Virtualization)
 
 ```bash
 oc get vm -n sno-clusters
 oc get vmi -n sno-clusters
 ```
 
-### Access VM Console
+### Access VM Console (OpenShift Virtualization)
 
 ```bash
 virtctl console <vm-name> -n sno-clusters
+```
+
+### Check EC2 Instance (AWS)
+
+```bash
+# List EC2 instances
+aws ec2 describe-instances \
+  --filters "Name=tag:cluster,Values=sno-aws-01" \
+  --region us-east-1 \
+  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]'
+
+# SSH to instance
+ssh -i ~/.ssh/your-keypair.pem core@<elastic-ip>
+
+# View console output
+aws ec2 get-console-output --instance-id <instance-id> --region us-east-1
 ```
 
 ### View Installation Logs
@@ -331,26 +586,35 @@ tail -f /tmp/sno-install-<cluster-name>/.openshift_install.log
 
 ### Common Issues
 
-1. **Storage class not found**:
+1. **Storage class not found** (OpenShift Virtualization):
    - Verify storage class exists: `oc get sc`
    - Update `sno_storage_class` variable
 
-2. **Insufficient resources**:
+2. **Insufficient resources** (OpenShift Virtualization):
    - Check available resources on worker nodes
    - Reduce `sno_vm_cores` and `sno_vm_memory` if needed
 
 3. **Network connectivity**:
-   - Access VM console to check progress
-   - Verify NetworkAttachmentDefinition is correct (if using custom networking)
-   - Check network connectivity from VM
+   - OpenShift Virt: Access VM console to check progress
+   - AWS: Check security group rules, verify Elastic IP assigned
+   - Verify Route53 DNS records (AWS) or NetworkAttachmentDefinition (OpenShift Virt)
 
-4. **NetworkAttachmentDefinition not found**:
+4. **AWS-specific issues**:
+   - **AMI not found**: Verify `aws_ami_id` is correct for your region
+   - **VPC/Subnet errors**: Ensure VPC and subnet have internet connectivity
+   - **Security group rules**: Must allow ports 6443, 22, 80, 443, 22623
+   - **Route53 zone not found**: Verify `aws_route53_zone` exists in your account
+   - **Instance launch failed**: Check EC2 instance limits and available capacity
+   - **Elastic IP limit**: You may need to request EIP limit increase
+
+5. **NetworkAttachmentDefinition not found** (OpenShift Virtualization):
    - Verify NAD exists: `oc get network-attachment-definitions -n <namespace>`
    - Check NAD name format: `namespace/name` or just `name` (uses VM namespace)
    - Create NAD using examples in `examples/network-attachment-definitions/`
 
-5. **Bootstrap timeout**:
-   - Access VM console to check progress
+6. **Bootstrap timeout**:
+   - OpenShift Virt: Access VM console to check progress
+   - AWS: Check EC2 console output, verify network connectivity
    - Verify network connectivity
    - Check ignition configuration
 
@@ -363,19 +627,29 @@ tail -f /tmp/sno-install-<cluster-name>/.openshift_install.log
 ├── setup.sh                            # Initial setup script
 ├── ansible.cfg                          # Ansible configuration
 ├── requirements.yml                     # Ansible collection requirements
-├── deploy-sno.yml                       # Main deployment playbook
-├── destroy-sno.yml                      # Cleanup playbook
+├── deploy-sno.yml                       # OpenShift Virtualization deployment playbook
+├── deploy-sno-aws.yml                   # AWS deployment playbook
+├── destroy-sno.yml                      # Cleanup playbook (OpenShift Virtualization)
+├── acm-deploy-infrastructure.yml        # ACM policy deployment for operators
+├── acm-deploy-application.yml           # ACM application deployment via GitOps
+├── architecture-diagram.drawio          # Architecture diagram
 ├── inventory/
 │   ├── hosts                           # Inventory file
 │   ├── group_vars/
 │   │   └── all.yml                     # Global variables
 │   └── host_vars/
-│       └── sno-cluster-01.yml          # Per-cluster variables
+│       ├── sno-cluster-01.yml          # OpenShift Virt cluster variables
+│       └── sno-aws-example.yml         # AWS cluster example configuration
 ├── roles/
 │   ├── sno_prerequisites/              # Prerequisites validation
 │   ├── sno_prepare_installation/       # Installation preparation
-│   ├── sno_create_vm/                  # VM creation
+│   ├── sno_create_vm/                  # VM creation (OpenShift Virtualization)
 │   └── sno_monitor_installation/       # Installation monitoring
+├── app/                                 # Sample Quarkus MySQL application
+│   ├── pom.xml                         # Maven dependencies
+│   ├── src/                            # Java source code
+│   ├── openshift/                      # OpenShift manifests
+│   └── Dockerfile.native               # Native image Dockerfile
 ├── examples/
 │   ├── custom-deployment.yml           # Custom deployment example
 │   ├── multi-cluster-deployment.yml    # Multiple clusters
@@ -388,22 +662,155 @@ tail -f /tmp/sno-install-<cluster-name>/.openshift_install.log
         └── cluster-info.txt
 ```
 
+## Complete Deployment Examples
+
+### Example 1: Single SNO on OpenShift Virtualization
+
+```bash
+# 1. Configure cluster
+cat > inventory/host_vars/sno-cluster-01.yml <<EOF
+sno_cluster_name: "sno-cluster-01"
+sno_base_domain: "lab.example.com"
+sno_vm_cores: 16
+sno_vm_memory: "64Gi"
+metallb_ip_address_ranges:
+  - "192.168.1.100-192.168.1.110"
+EOF
+
+# 2. Deploy cluster
+export KUBECONFIG=~/.kube/config
+./ansible-runner.sh deploy --limit sno-cluster-01
+
+# 3. Wait for installation (30-60 minutes)
+
+# 4. Deploy operators via ACM
+./ansible-runner.sh operators --limit sno-cluster-01
+
+# 5. Deploy application via GitOps
+./ansible-runner.sh deployapp
+```
+
+### Example 2: DR Setup with Two SNO Clusters (One on AWS, One on OpenShift Virt)
+
+```bash
+# 1. Configure OpenShift Virt cluster
+cat > inventory/host_vars/sno-cluster-01.yml <<EOF
+sno_cluster_name: "sno-cluster-01"
+sno_base_domain: "lab.example.com"
+sno_vm_cores: 16
+sno_vm_memory: "64Gi"
+metallb_ip_address_ranges:
+  - "192.168.1.100-192.168.1.110"
+EOF
+
+# 2. Configure AWS cluster
+cat > inventory/host_vars/sno-aws-01.yml <<EOF
+sno_cluster_name: "sno-aws-01"
+sno_base_domain: "example.com"
+aws_region: "us-east-1"
+aws_instance_type: "m5.4xlarge"
+aws_ami_id: "ami-0123456789abcdef0"
+aws_vpc_id: "vpc-xxxxxxxxxxxxxxxxx"
+aws_subnet_id: "subnet-xxxxxxxxxxxxxxxxx"
+aws_security_group_id: "sg-xxxxxxxxxxxxxxxxx"
+aws_key_name: "my-keypair"
+aws_route53_zone: "example.com"
+aws_create_eip: true
+sno_secondary_disk_device: "/dev/nvme1n1"
+metallb_ip_address_ranges:
+  - "10.0.1.100-10.0.1.110"
+EOF
+
+# 3. Deploy both clusters
+export KUBECONFIG=~/.kube/config
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+
+./ansible-runner.sh deploy --limit sno-cluster-01
+./ansible-runner.sh deployaws --limit sno-aws-01
+
+# 4. Wait for both installations
+
+# 5. Deploy operators to both clusters
+./ansible-runner.sh operators
+
+# 6. Submariner will automatically be deployed (different MetalLB subnets)
+
+# 7. Deploy application to both clusters
+./ansible-runner.sh deployapp
+
+# 8. Verify DR setup
+export KUBECONFIG=artifacts/sno-cluster-01/kubeconfig
+oc get pods -n quarkus-mysql-app
+
+export KUBECONFIG=artifacts/sno-aws-01/kubeconfig
+oc get pods -n quarkus-mysql-app
+```
+
+### Example 3: AWS-Only Deployment
+
+```bash
+# 1. Configure AWS cluster
+cat > inventory/host_vars/sno-aws-prod.yml <<EOF
+sno_cluster_name: "sno-aws-prod"
+sno_base_domain: "prod.example.com"
+aws_region: "us-west-2"
+aws_availability_zone: "us-west-2a"
+aws_instance_type: "m5.4xlarge"
+aws_ami_id: "ami-0fedcba9876543210"
+aws_vpc_id: "vpc-prod123456"
+aws_subnet_id: "subnet-prod78901"
+aws_security_group_id: "sg-prod23456"
+aws_key_name: "prod-keypair"
+aws_route53_zone: "prod.example.com"
+aws_create_eip: true
+sno_secondary_disk_device: "/dev/nvme1n1"
+sno_openshift_version: "4.20.2"
+EOF
+
+# 2. Set credentials
+export KUBECONFIG=~/.kube/hub-cluster-config
+export AWS_PROFILE="production"
+
+# 3. Deploy
+./ansible-runner.sh deployaws --limit sno-aws-prod
+
+# 4. Monitor EC2 instance
+aws ec2 describe-instances \
+  --filters "Name=tag:cluster,Values=sno-aws-prod" \
+  --region us-west-2 \
+  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]'
+
+# 5. Access cluster after installation
+export KUBECONFIG=artifacts/sno-aws-prod/kubeconfig
+oc get nodes
+```
+
 ## Security Considerations
 
 1. **Protect credentials**:
    - Never commit `pull-secret.json` or `ssh-key.pub` to version control
    - Use `.gitignore` for sensitive files
    - Restrict access to `artifacts/` directory
+   - Rotate AWS credentials regularly
 
 2. **OpenShift token**:
    - Use environment variables for tokens
    - Rotate tokens regularly
    - Use service accounts for automation
 
-3. **Network security**:
+3. **AWS security**:
+   - Use IAM roles instead of access keys when possible
+   - Implement least-privilege security groups
+   - Enable VPC Flow Logs for network monitoring
+   - Use AWS Secrets Manager for sensitive data
+   - Enable CloudTrail for API auditing
+
+4. **Network security**:
    - Use NetworkPolicies to isolate SNO VM
    - Configure proper firewall rules
    - Use TLS for all communications
+   - Restrict MetalLB IP ranges to required addresses only
 
 ## Why Podman-based?
 

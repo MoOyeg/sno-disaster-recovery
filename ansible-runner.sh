@@ -296,10 +296,14 @@ Usage: $0 <command> [options]
 
 Commands:
     build           Build the Ansible container image
-    deploy          Deploy SNO cluster
+    deploy          Deploy SNO cluster on OpenShift Virtualization
+    deployaws       Deploy SNO cluster on AWS
     destroy         Destroy SNO cluster
     acm             Import deployed cluster into ACM
     operators       Deploy operators to SNO clusters via ACM policies
+    deleteoperators Delete operator policies from ACM (does not uninstall operators)
+    deployapp       Deploy Quarkus MySQL application via ACM and ArgoCD
+    deleteapp       Delete Quarkus MySQL application from ACM and ArgoCD
     artifact        Collect cluster artifacts (kubeconfig, passwords, etc.)
     run <playbook>  Run a specific playbook
     shell           Open a shell in the Ansible container
@@ -314,8 +318,13 @@ Examples:
     $0 build
     $0 deploy
     $0 deploy --limit sno-cluster-01 -v
+    $0 deployaws
+    $0 deployaws --limit sno-cluster-01
     $0 destroy
     $0 operators
+    $0 deleteoperators
+    $0 deployapp
+    $0 deleteapp
     $0 run deploy-sno.yml --check
     $0 shell
 
@@ -323,6 +332,9 @@ Environment Variables:
     OPENSHIFT_TOKEN         OpenShift API token (Option 1)
     KUBECONFIG              Path to kubeconfig file (Option 2 - Recommended)
     ASSISTED_OFFLINE_TOKEN  Red Hat Assisted Installer token (optional)
+    AWS_ACCESS_KEY_ID       AWS access key (for AWS deployment)
+    AWS_SECRET_ACCESS_KEY   AWS secret key (for AWS deployment)
+    AWS_PROFILE             AWS profile name (alternative to access keys)
 
 Authentication:
     The script will use kubeconfig if available (checked in order):
@@ -347,6 +359,12 @@ case "${1:-}" in
         run_ansible "deploy-sno.yml" "$@"
         ;;
     
+    deployaws)
+        build_image
+        shift
+        run_ansible "deploy-sno-aws.yml" "$@"
+        ;;
+    
     destroy)
         build_image
         shift
@@ -363,6 +381,24 @@ case "${1:-}" in
         build_image
         shift
         run_ansible "acm-deploy-infrastructure.yml" "$@"
+        ;;
+    
+    deleteoperators)
+        build_image
+        shift
+        run_ansible "acm-delete-infrastructure.yml" "$@"
+        ;;
+    
+    deployapp)
+        build_image
+        shift
+        run_ansible "acm-deploy-application.yml" "$@"
+        ;;
+    
+    deleteapp)
+        build_image
+        shift
+        run_ansible "acm-delete-application.yml" "$@"
         ;;
     
     artifact)

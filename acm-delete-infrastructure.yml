@@ -1,0 +1,316 @@
+---
+- name: Delete infrastructure operators from SNO clusters via ACM Policy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    acm_namespace: "open-cluster-management"
+    gitops_hub_namespace: "gitops-hub-policies"
+    sno_policies_namespace: "sno-policies"
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+    
+    - name: Display ACM status
+      ansible.builtin.debug:
+        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+    
+    - name: Fail if ACM is not installed
+      ansible.builtin.fail:
+        msg: "ACM is not installed. There are no policies to delete."
+      when: acm_check.resources | length == 0
+    
+    - name: Check if policy namespaces exist
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: namespace_checks
+      loop:
+        - "{{ gitops_hub_namespace }}"
+        - "{{ sno_policies_namespace }}"
+      ignore_errors: true
+    
+    - name: Display deletion plan
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "INFRASTRUCTURE DELETION PLAN"
+          - "=========================================="
+          - "This will delete the following ACM resources:"
+          - ""
+          - "PolicySets:"
+          - "  - sno-infrastructure-policyset ({{ sno_policies_namespace }})"
+          - ""
+          - "Policies (SNO clusters):"
+          - "  - install-metallb-operator"
+          - "  - install-lvm-storage-operator"
+          - "  - install-gitops-operator"
+          - "  - argocd-health-status-sno (monitors ArgoCD on SNO)"
+          - "  - configure-metallb-ipaddresspool"
+          - "  - configure-metallb-l2advertisement"
+          - "  - configure-lvm-storage-*"
+          - ""
+          - "Policies (Hub cluster):"
+          - "  - install-gitops-operator-hub"
+          - "  - gitops-cluster-integration (creates GitOpsClusters)"
+          - "  - argocd-health-status (monitors ArgoCD health)"
+          - ""
+          - "GitOps Resources (openshift-gitops):"
+          - "  - GitOpsCluster resources for each ManagedClusterSet"
+          - "  - ManagedClusterSetBindings in openshift-gitops"
+          - "  - Placements for GitOps integration"
+          - ""
+          - "Namespaces:"
+          - "  - {{ gitops_hub_namespace }}"
+          - "  - {{ sno_policies_namespace }}"
+          - ""
+          - "WARNING: This will NOT uninstall the operators from clusters."
+          - "It only removes the ACM policies that manage them."
+          - "Operators will remain installed on the clusters."
+          - "=========================================="
+    
+    - name: Confirm deletion
+      ansible.builtin.pause:
+        prompt: |
+          
+          Are you sure you want to delete all infrastructure policies? (yes/no)
+      register: delete_confirm
+    
+    - name: Fail if deletion not confirmed
+      ansible.builtin.fail:
+        msg: "Infrastructure deletion cancelled by user"
+      when: delete_confirm.user_input | lower not in ['yes', 'y']
+    
+    - name: Delete SNO infrastructure PolicySet
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PolicySet
+        name: sno-infrastructure-policyset
+        namespace: "{{ sno_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for PolicySet deletion
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PolicySet
+        name: sno-infrastructure-policyset
+        namespace: "{{ sno_policies_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: policyset_check
+      until: policyset_check.resources | length == 0
+      retries: 30
+      delay: 2
+      ignore_errors: true
+    
+    - name: Get all policies in SNO namespace
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: "{{ sno_policies_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: sno_policies
+      ignore_errors: true
+    
+    - name: Delete all SNO policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ sno_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ sno_policies.resources }}"
+      when: sno_policies.resources is defined and sno_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get all policies in GitOps hub namespace
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: "{{ gitops_hub_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: hub_policies
+      ignore_errors: true
+    
+    - name: Delete all hub GitOps policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ gitops_hub_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ hub_policies.resources }}"
+      when: hub_policies.resources is defined and hub_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get all GitOpsCluster resources
+      kubernetes.core.k8s_info:
+        api_version: apps.open-cluster-management.io/v1beta1
+        kind: GitOpsCluster
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: gitops_clusters
+      ignore_errors: true
+    
+    - name: Delete GitOpsCluster resources
+      kubernetes.core.k8s:
+        api_version: apps.open-cluster-management.io/v1beta1
+        kind: GitOpsCluster
+        name: "{{ item.metadata.name }}"
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ gitops_clusters.resources }}"
+      when: gitops_clusters.resources is defined and gitops_clusters.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get ManagedClusterSetBindings in openshift-gitops
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: gitops_bindings
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBindings in openshift-gitops
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: "{{ item.metadata.name }}"
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ gitops_bindings.resources }}"
+      when: gitops_bindings.resources is defined and gitops_bindings.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get Placements in openshift-gitops
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: gitops_placements
+      ignore_errors: true
+    
+    - name: Delete Placements in openshift-gitops
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: "{{ item.metadata.name }}"
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ gitops_placements.resources }}"
+      when: gitops_placements.resources is defined and gitops_placements.resources | length > 0
+      ignore_errors: true
+
+    
+    - name: Delete ManagedClusterSetBinding in GitOps hub namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: global
+        namespace: "{{ gitops_hub_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding in SNO policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: "{{ sno_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for all policies to be deleted
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: policies_check
+      until: policies_check.resources | length == 0
+      retries: 60
+      delay: 5
+      loop:
+        - "{{ gitops_hub_namespace }}"
+        - "{{ sno_policies_namespace }}"
+      ignore_errors: true
+    
+    - name: Delete GitOps hub policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ gitops_hub_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete SNO policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ sno_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for namespaces to be deleted
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: ns_check
+      until: ns_check.resources | length == 0
+      retries: 60
+      delay: 5
+      loop:
+        - "{{ gitops_hub_namespace }}"
+        - "{{ sno_policies_namespace }}"
+      ignore_errors: true
+    
+    - name: Display deletion summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "INFRASTRUCTURE DELETION COMPLETE"
+          - "=========================================="
+          - "Deleted resources:"
+          - "  - All ACM policies for infrastructure operators"
+          - "  - PolicySet: sno-infrastructure-policyset"
+          - "  - ManagedClusterSetBindings in policy namespaces"
+          - "  - Namespaces: {{ gitops_hub_namespace }}, {{ sno_policies_namespace }}"
+          - ""
+          - "IMPORTANT NOTES:"
+          - "1. Operators are still installed on the clusters"
+          - "2. Operator configurations (MetalLB pools, LVM storage) remain"
+          - "3. To fully remove operators, you need to manually delete them from each cluster"
+          - ""
+          - "To remove operators from clusters manually:"
+          - "  oc delete subscription <operator-name> -n <namespace>"
+          - "  oc delete csv <csv-name> -n <namespace>"
+          - "  oc delete operatorgroup <name> -n <namespace>"
+          - "=========================================="

@@ -1,0 +1,355 @@
+<mxfile host="app.diagrams.net" modified="2025-12-12T00:00:00.000Z" agent="draw.io" version="24.0.0">
+  <diagram name="SNO Disaster Recovery Architecture" id="sno-dr-architecture">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- Hub Cluster -->
+        <mxCell id="hub-cluster" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1520" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="hub-title" value="&lt;b&gt;Hub Cluster (OpenShift Virtualization)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="60" y="50" width="340" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- ACM -->
+        <mxCell id="acm" value="&lt;b&gt;Advanced Cluster Management&lt;/b&gt;&lt;br&gt;(ACM Hub)&lt;br&gt;&lt;br&gt;• Policy Management&lt;br&gt;• Cluster Lifecycle&lt;br&gt;• Application Deployment&lt;br&gt;• Submariner Broker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="200" height="180" as="geometry" />
+        </mxCell>
+        
+        <!-- OpenShift GitOps -->
+        <mxCell id="gitops-hub" value="&lt;b&gt;OpenShift GitOps&lt;/b&gt;&lt;br&gt;(ArgoCD on Hub)&lt;br&gt;&lt;br&gt;• ApplicationSet Controller&lt;br&gt;• Git Repository Sync&lt;br&gt;• Multi-Cluster Deployment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="200" height="180" as="geometry" />
+        </mxCell>
+        
+        <!-- SNO VM 1 -->
+        <mxCell id="sno-vm-1" value="&lt;b&gt;SNO Cluster 1 VM&lt;/b&gt;&lt;br&gt;(KubeVirt)&lt;br&gt;&lt;br&gt;• 8 vCPU&lt;br&gt;• 32GB RAM&lt;br&gt;• 120GB Storage&lt;br&gt;• Secondary Disk (/dev/vdb)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=center;" vertex="1" parent="1">
+          <mxGeometry x="880" y="100" width="200" height="180" as="geometry" />
+        </mxCell>
+        
+        <!-- SNO VM 2 -->
+        <mxCell id="sno-vm-2" value="&lt;b&gt;SNO Cluster 2 VM&lt;/b&gt;&lt;br&gt;(KubeVirt)&lt;br&gt;&lt;br&gt;• 8 vCPU&lt;br&gt;• 32GB RAM&lt;br&gt;• 120GB Storage&lt;br&gt;• Secondary Disk (/dev/vdb)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="100" width="200" height="180" as="geometry" />
+        </mxCell>
+        
+        <!-- Policy Engine -->
+        <mxCell id="policy-engine" value="&lt;b&gt;Policy Engine&lt;/b&gt;&lt;br&gt;&lt;br&gt;• sno-demo ManagedClusterSet&lt;br&gt;• sno-operators-policyset&lt;br&gt;• hub-gitops-policyset" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="1">
+          <mxGeometry x="600" y="100" width="200" height="180" as="geometry" />
+        </mxCell>
+        
+        <!-- SNO Cluster 1 Details -->
+        <mxCell id="sno1-cluster" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;dashed=1;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="750" height="750" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-title" value="&lt;b&gt;SNO Cluster 1 (Edge/Remote Site A)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="60" y="410" width="350" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- SNO Cluster 2 Details -->
+        <mxCell id="sno2-cluster" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="810" y="400" width="750" height="750" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-title" value="&lt;b&gt;SNO Cluster 2 (Edge/Remote Site B)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="830" y="410" width="350" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- Infrastructure Operators - SNO1 -->
+        <mxCell id="sno1-operators" value="&lt;b&gt;Infrastructure Operators&lt;/b&gt;&lt;br&gt;(Deployed via ACM Policy)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="460" width="340" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.1.100-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="80" y="500" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-localstorage" value="&lt;b&gt;Local Storage&lt;/b&gt;&lt;br&gt;Device: /dev/vdb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="500" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-lvm" value="&lt;b&gt;LVM Storage&lt;/b&gt;&lt;br&gt;Dynamic Provisioning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="80" y="580" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-gitops" value="&lt;b&gt;OpenShift GitOps&lt;/b&gt;&lt;br&gt;ArgoCD Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="580" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-submariner" value="&lt;b&gt;Submariner Gateway&lt;/b&gt;&lt;br&gt;(If subnets differ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="80" y="660" width="300" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- Application - SNO1 -->
+        <mxCell id="sno1-app" value="&lt;b&gt;Application Namespace&lt;/b&gt;&lt;br&gt;(quarkus-mysql-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="740" width="340" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-route" value="&lt;b&gt;Route&lt;/b&gt;&lt;br&gt;TLS Edge Termination&lt;br&gt;MetalLB IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="780" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-quarkus" value="&lt;b&gt;Quarkus App&lt;/b&gt;&lt;br&gt;Task Manager API&lt;br&gt;Web UI&lt;br&gt;&lt;br&gt;• REST API (CRUD)&lt;br&gt;• Health Checks&lt;br&gt;• Metrics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="860" width="140" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-mysql" value="&lt;b&gt;MySQL 8.0&lt;/b&gt;&lt;br&gt;StatefulSet&lt;br&gt;&lt;br&gt;• Persistent Volume&lt;br&gt;• 1Gi Storage&lt;br&gt;• Headless Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="240" y="860" width="140" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;Local Storage Class" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1000" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno1-secret" value="&lt;b&gt;Secret&lt;/b&gt;&lt;br&gt;MySQL Credentials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1070" width="300" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- Infrastructure Operators - SNO2 -->
+        <mxCell id="sno2-operators" value="&lt;b&gt;Infrastructure Operators&lt;/b&gt;&lt;br&gt;(Deployed via ACM Policy)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="830" y="460" width="340" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-metallb" value="&lt;b&gt;MetalLB&lt;/b&gt;&lt;br&gt;IP Range: 192.168.2.100-110" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="850" y="500" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-localstorage" value="&lt;b&gt;Local Storage&lt;/b&gt;&lt;br&gt;Device: /dev/vdb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="500" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-lvm" value="&lt;b&gt;LVM Storage&lt;/b&gt;&lt;br&gt;Dynamic Provisioning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="850" y="580" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-gitops" value="&lt;b&gt;OpenShift GitOps&lt;/b&gt;&lt;br&gt;ArgoCD Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="580" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-submariner" value="&lt;b&gt;Submariner Gateway&lt;/b&gt;&lt;br&gt;(If subnets differ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="850" y="660" width="300" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- Application - SNO2 -->
+        <mxCell id="sno2-app" value="&lt;b&gt;Application Namespace&lt;/b&gt;&lt;br&gt;(quarkus-mysql-app)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="830" y="740" width="340" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-route" value="&lt;b&gt;Route&lt;/b&gt;&lt;br&gt;TLS Edge Termination&lt;br&gt;MetalLB IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="850" y="780" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-quarkus" value="&lt;b&gt;Quarkus App&lt;/b&gt;&lt;br&gt;Task Manager API&lt;br&gt;Web UI&lt;br&gt;&lt;br&gt;• REST API (CRUD)&lt;br&gt;• Health Checks&lt;br&gt;• Metrics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="850" y="860" width="140" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-mysql" value="&lt;b&gt;MySQL 8.0&lt;/b&gt;&lt;br&gt;StatefulSet&lt;br&gt;&lt;br&gt;• Persistent Volume&lt;br&gt;• 1Gi Storage&lt;br&gt;• Headless Service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="860" width="140" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-pvc" value="&lt;b&gt;PersistentVolumeClaim&lt;/b&gt;&lt;br&gt;Local Storage Class" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="850" y="1000" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="sno2-secret" value="&lt;b&gt;Secret&lt;/b&gt;&lt;br&gt;MySQL Credentials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="850" y="1070" width="300" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- GitHub Repository -->
+        <mxCell id="github" value="&lt;b&gt;GitHub Repository&lt;/b&gt;&lt;br&gt;sno-disaster-recovery&lt;br&gt;&lt;br&gt;• Application Manifests&lt;br&gt;• Ansible Playbooks&lt;br&gt;• Policy Definitions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="460" width="320" height="140" as="geometry" />
+        </mxCell>
+        
+        <!-- Network/Traffic Flows -->
+        <mxCell id="arrow1" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1" source="acm" target="policy-engine">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="290" y="190" as="sourcePoint" />
+            <mxPoint x="590" y="190" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow1-label" value="Policy Distribution" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow1">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="10" y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow2" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1" source="policy-engine" target="sno-vm-1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="800" y="190" as="sourcePoint" />
+            <mxPoint x="880" y="190" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow2-label" value="Deploy Operators" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow2">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="10" y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow3" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1" source="policy-engine" target="sno-vm-2">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="800" y="190" as="sourcePoint" />
+            <mxPoint x="1320" y="190" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow3-label" value="Deploy Operators" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow3">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="10" y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow4" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#FF6600;" edge="1" parent="1" source="gitops-hub" target="github">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="520" y="190" as="sourcePoint" />
+            <mxPoint x="1220" y="530" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="420" y="360" />
+              <mxPoint x="1380" y="360" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow4-label" value="Git Sync" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow4">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="-340" y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow5" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#FF6600;startArrow=classic;startFill=1;" edge="1" parent="1" source="gitops-hub" target="sno1-gitops">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="420" y="280" as="sourcePoint" />
+            <mxPoint x="310" y="610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="310" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow5-label" value="App Deployment" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow5">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="50" y="40" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow6" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#FF6600;startArrow=classic;startFill=1;" edge="1" parent="1" source="gitops-hub" target="sno2-gitops">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="520" y="190" as="sourcePoint" />
+            <mxPoint x="1080" y="610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="1080" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow6-label" value="App Deployment" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow6">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint x="-50" y="40" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow7" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#CC0000;startArrow=classic;startFill=1;dashed=1;" edge="1" parent="1" source="sno1-submariner" target="sno2-submariner">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="380" y="680" as="sourcePoint" />
+            <mxPoint x="850" y="680" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow7-label" value="Submariner Gateway (IPSec Tunnel)" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=11;fontStyle=1" vertex="1" connectable="0" parent="arrow7">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint y="-11" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow8" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#009900;" edge="1" parent="1" source="sno1-quarkus" target="sno1-mysql">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="220" y="920" as="sourcePoint" />
+            <mxPoint x="240" y="920" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow8-label" value="DB Connection" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow8">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow9" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#009900;" edge="1" parent="1" source="sno2-quarkus" target="sno2-mysql">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="990" y="920" as="sourcePoint" />
+            <mxPoint x="1010" y="920" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow9-label" value="DB Connection" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;" vertex="1" connectable="0" parent="arrow9">
+          <mxGeometry x="-0.1" y="1" relative="1" as="geometry">
+            <mxPoint y="-9" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Legend -->
+        <mxCell id="legend" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="640" width="320" height="510" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" value="&lt;b&gt;Legend&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="650" width="320" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-acm" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="690" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-acm-text" value="ACM/Policy Components" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="690" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-gitops" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="730" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-gitops-text" value="GitOps/ArgoCD Components" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="730" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-infra" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="770" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-infra-text" value="Infrastructure Operators" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="770" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-app" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="810" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-app-text" value="Application Components" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="810" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-vm" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="850" width="40" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-vm-text" value="Virtual Machine (KubeVirt)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="850" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-policy" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#0066CC;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1240" y="905" as="sourcePoint" />
+            <mxPoint x="1280" y="905" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-policy-text" value="Policy Distribution" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="890" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-gitops-flow" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#FF6600;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1240" y="945" as="sourcePoint" />
+            <mxPoint x="1280" y="945" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-gitops-flow-text" value="GitOps Deployment" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="930" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-submariner-flow" value="" style="endArrow=classic;html=1;strokeWidth=3;strokeColor=#CC0000;dashed=1;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1240" y="985" as="sourcePoint" />
+            <mxPoint x="1280" y="985" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-submariner-flow-text" value="Submariner IPSec Tunnel" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="970" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-app-flow" value="" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#009900;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1240" y="1025" as="sourcePoint" />
+            <mxPoint x="1280" y="1025" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-app-flow-text" value="Application Traffic" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="1010" width="230" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- Key Features Box -->
+        <mxCell id="features-title" value="&lt;b&gt;Key Features:&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1050" width="280" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="features-text" value="• Automated operator deployment via ACM&lt;br&gt;• GitOps-based application deployment&lt;br&gt;• Intelligent Submariner routing&lt;br&gt;• MetalLB for LoadBalancer IPs&lt;br&gt;• Local &amp;amp; LVM storage provisioning&lt;br&gt;• Quarkus + MySQL stack&lt;br&gt;• Disaster Recovery ready" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1070" width="280" height="70" as="geometry" />
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

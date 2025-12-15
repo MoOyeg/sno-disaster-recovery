@@ -1,0 +1,59 @@
+---
+# AWS-specific configuration for SNO deployment
+# Copy this file to inventory/host_vars/<cluster-name>.yml and customize
+
+# Cluster identification
+sno_cluster_name: "sno-aws-01"
+sno_base_domain: "example.com"
+
+# AWS Region and availability zone
+aws_region: "us-east-1"
+aws_availability_zone: "us-east-1a"
+
+# EC2 Instance configuration
+aws_instance_type: "m5.2xlarge"  # Minimum for SNO: 8 vCPU, 32GB RAM
+aws_root_volume_size: 120  # GB - OS disk
+aws_secondary_volume_size: 100  # GB - for local storage operator
+
+# RHCOS AMI ID (Red Hat CoreOS)
+# Get latest from: https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/
+aws_ami_id: "ami-xxxxxxxxxxxxxxxxx"
+
+# AWS Network Configuration
+aws_vpc_id: "vpc-xxxxxxxxxxxxxxxxx"
+aws_subnet_id: "subnet-xxxxxxxxxxxxxxxxx"
+aws_security_group_id: "sg-xxxxxxxxxxxxxxxxx"
+
+# SSH Key for EC2 instance access
+aws_key_name: "your-keypair-name"
+
+# Elastic IP (optional, but recommended for stable DNS)
+aws_create_eip: true
+
+# S3 bucket for ISO storage (optional)
+# aws_s3_bucket: "your-sno-deployment-bucket"
+
+# Route53 DNS management (optional, but recommended)
+# If set, will automatically create DNS records for API and apps
+# aws_route53_zone: "example.com"
+
+# OpenShift version
+sno_openshift_version: "4.20.2"
+
+# MetalLB IP address ranges (optional)
+# For AWS, you typically use AWS Load Balancers instead
+# metallb_ip_address_ranges: []
+
+# Secondary disk configuration
+sno_add_secondary_disk: true
+sno_secondary_disk_size: "100Gi"
+sno_secondary_disk_device: "/dev/nvme1n1"  # AWS NVMe device naming
+
+# ACM labels for cluster
+acm_labels:
+  cluster-type: sno
+  environment: aws
+  region: "{{ aws_region }}"
+
+# ACM auto-import after deployment
+acm_auto_import: true

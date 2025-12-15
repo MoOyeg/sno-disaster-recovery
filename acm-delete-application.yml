@@ -1,0 +1,182 @@
+---
+- name: Delete Quarkus MySQL Application from ACM and ArgoCD
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    acm_namespace: "open-cluster-management"
+    application_namespace: "quarkus-mysql-app"
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if application namespace exists
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ application_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: namespace_check
+      ignore_errors: true
+    
+    - name: Display deletion plan
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "APPLICATION DELETION PLAN"
+          - "=========================================="
+          - "Namespace: {{ application_namespace }}"
+          - "This will delete:"
+          - "  - ApplicationSet (quarkus-mysql-appset)"
+          - "  - Placement (sno-app-placement)"
+          - "  - Placement (sno-app-placement-active)"
+          - "  - ManagedClusterSetBinding (sno-demo)"
+          - "  - RBAC resources (Role, RoleBinding)"
+          - "  - Namespace ({{ application_namespace }})"
+          - ""
+          - "Note: cluster labels (cluster-type, app-role) will be removed"
+          - "=========================================="
+      when: namespace_check.resources | length > 0
+    
+    - name: Confirm deletion
+      ansible.builtin.pause:
+        prompt: |
+          
+          Are you sure you want to delete the application? (yes/no)
+      register: delete_confirm
+      when: namespace_check.resources | length > 0
+    
+    - name: Fail if deletion not confirmed
+      ansible.builtin.fail:
+        msg: "Application deletion cancelled by user"
+      when:
+        - namespace_check.resources | length > 0
+        - delete_confirm.user_input | lower not in ['yes', 'y']
+    
+    - name: Delete ApplicationSet
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-app
+        namespace: "{{ application_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for ApplicationSet deletion
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-app
+        namespace: "{{ application_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: appset_check
+      until: appset_check.resources | length == 0
+      retries: 30
+      delay: 2
+      ignore_errors: true
+    
+    - name: Delete Placement for all SNO clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement
+        namespace: "{{ application_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete Placement for active cluster
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement-active
+        namespace: "{{ application_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Get all managed clusters with app labels
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        label_selectors:
+          - cluster-type=sno
+      args: "{{ k8s_auth_params }}"
+      register: labeled_clusters
+      ignore_errors: true
+    
+    - name: Remove app-role label from clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.metadata.name }}"
+        state: patched
+        definition:
+          metadata:
+            labels:
+              app-role: null
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ labeled_clusters.resources }}"
+      when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: "{{ application_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ application_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for namespace deletion
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ application_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: ns_check
+      until: ns_check.resources | length == 0
+      retries: 60
+      delay: 5
+      ignore_errors: true
+    
+    - name: Display deletion summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "APPLICATION DELETION COMPLETE"
+          - "=========================================="
+          - "Namespace '{{ application_namespace }}' has been removed"
+          - "All application resources have been deleted"
+          - ""
+          - "Note: Application deployments on target clusters"
+          - "will be cleaned up automatically by ArgoCD"
+          - "=========================================="
+      when: namespace_check.resources | length > 0
+    
+    - name: Display message if nothing to delete
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "NO APPLICATION FOUND"
+          - "=========================================="
+          - "Namespace '{{ application_namespace }}' does not exist"
+          - "Nothing to delete"
+          - "=========================================="
+      when: namespace_check.resources | length == 0

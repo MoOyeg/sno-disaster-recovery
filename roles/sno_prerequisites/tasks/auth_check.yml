@@ -1,5 +1,28 @@
 ---
 # Validate authentication method is available
+- name: Check if kubeconfig file exists
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: kubeconfig_check
+  delegate_to: localhost
+  loop:
+    - "{{ lookup('env', 'KUBECONFIG') | default('', true) }}"
+    - "{{ lookup('env', 'HOME') }}/.kube/config"
+    - "{{ playbook_dir }}/kubeconfig"
+  when: item != ''
+
+- name: Set kubeconfig path from discovered file
+  ansible.builtin.set_fact:
+    openshift_kubeconfig: "{{ item.stat.path }}"
+    openshift_use_kubeconfig: true
+  loop: "{{ kubeconfig_check.results }}"
+  when:
+    - kubeconfig_check.results is defined
+    - item.stat is defined
+    - item.stat.exists | default(false)
+  loop_control:
+    label: "{{ item.stat.path | default('N/A') }}"
+
 - name: Check if using kubeconfig authentication
   ansible.builtin.set_fact:
     using_kubeconfig: "{{ openshift_use_kubeconfig | bool }}"
@@ -8,27 +31,21 @@
   ansible.builtin.debug:
     msg: "Using {{ 'kubeconfig' if using_kubeconfig else 'token' }} authentication"
 
-- name: Validate kubeconfig file exists
-  ansible.builtin.stat:
-    path: "{{ openshift_kubeconfig }}"
-  register: kubeconfig_stat
-  delegate_to: localhost
-  when: using_kubeconfig
-
-- name: Fail if kubeconfig doesn't exist
-  ansible.builtin.fail:
-    msg: "Kubeconfig file not found at {{ openshift_kubeconfig }}"
-  when:
-    - using_kubeconfig
-    - not kubeconfig_stat.stat.exists
-
-- name: Fail if token is empty
+- name: Fail if neither kubeconfig nor token is available
   ansible.builtin.fail:
     msg: |
-      OPENSHIFT_TOKEN is not set. Please set it with:
-      export OPENSHIFT_TOKEN=$(oc whoami -t)
+      No authentication method found!
       
-      Alternatively, use kubeconfig authentication by setting KUBECONFIG
+      Please use one of the following:
+      
+      Option 1 - Kubeconfig (recommended):
+        export KUBECONFIG=~/.kube/config
+        # OR place kubeconfig at ./kubeconfig
+      
+      Option 2 - Token:
+        export OPENSHIFT_TOKEN=$(oc whoami -t)
+      
+      Then run the playbook again.
   when:
     - not using_kubeconfig
     - openshift_token == ''

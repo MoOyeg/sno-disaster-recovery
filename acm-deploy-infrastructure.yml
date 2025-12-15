@@ -27,6 +27,492 @@
       ansible.builtin.meta: end_host
       when: acm_check.resources | length == 0
 
+    - name: Check if OpenShift GitOps operator is installed on hub cluster
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: openshift-gitops-operator
+        namespace: openshift-operators
+      args: "{{ k8s_auth_params }}"
+      register: gitops_operator_check
+      failed_when: false
+      run_once: true
+    
+    - name: Create Policy namespace for GitOps operator on hub
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: gitops-hub-policies
+        state: present
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Create ManagedClusterSetBinding for gitops-hub-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: global
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          spec:
+            clusterSet: global
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Create Placement for hub cluster
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: hub-cluster-placement
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          spec:
+            tolerations:
+              - key: cluster.open-cluster-management.io/unreachable
+                operator: Exists
+              - key: cluster.open-cluster-management.io/unavailable
+                operator: Exists
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      name: local-cluster
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Create Policy for OpenShift GitOps operator on hub cluster
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-gitops-operator-hub
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-operator-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: openshift-gitops-operator
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1beta1
+                  kind: OperatorPolicy
+                  metadata:
+                    name: gitops-operator
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    complianceType: musthave
+                    upgradeApproval: Automatic
+                    subscription:
+                      channel: latest
+                      name: openshift-gitops-operator
+                      namespace: openshift-operators
+                      source: redhat-operators
+                      sourceNamespace: openshift-marketplace
+      args: "{{ k8s_auth_params }}"
+      when: gitops_operator_check.resources | length == 0
+      run_once: true
+    
+    - name: Create PolicySet for Hub GitOps
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1beta1
+        kind: PolicySet
+        name: hub-gitops-policyset
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            description: Install GitOps operator on hub cluster
+            policies:
+              - install-gitops-operator-hub
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Update PlacementBinding to reference PolicySet
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: install-gitops-operator-hub-binding
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          placementRef:
+            name: hub-cluster-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: hub-gitops-policyset
+              apiGroup: policy.open-cluster-management.io
+              kind: PolicySet
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Wait for OpenShift GitOps operator to be installed on hub
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: openshift-operators
+      args: "{{ k8s_auth_params }}"
+      register: csv_check
+      until: csv_check.resources | selectattr('metadata.name', 'match', '^openshift-gitops-operator.*') | list | length > 0
+      retries: 30
+      delay: 10
+      when: gitops_operator_check.resources | length == 0
+      run_once: true
+    
+    - name: Wait for ArgoCD instance to be created on hub cluster
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: ArgoCD
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: argocd_instance
+      until: argocd_instance.resources | length > 0
+      retries: 30
+      delay: 10
+      when: gitops_operator_check.resources | length == 0
+      run_once: true
+    
+    - name: Create Policy for GitOps cluster integration per ManagedClusterSet
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: gitops-cluster-integration
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: gitops-cluster-integration
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    object-templates-raw: |
+                      {% raw %}{{- range $mcs := (lookup "cluster.open-cluster-management.io/v1beta2" "ManagedClusterSet" "" "").items }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: cluster.open-cluster-management.io/v1beta2
+                          kind: ManagedClusterSetBinding
+                          metadata:
+                            name: {{ $mcs.metadata.name }}
+                            namespace: openshift-gitops
+                          spec:
+                            clusterSet: {{ $mcs.metadata.name }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: cluster.open-cluster-management.io/v1beta1
+                          kind: Placement
+                          metadata:
+                            name: {{ $mcs.metadata.name }}-placement
+                            namespace: openshift-gitops
+                          spec:
+                            clusterSets:
+                              - {{ $mcs.metadata.name }}
+                            tolerations:
+                              - key: cluster.open-cluster-management.io/unreachable
+                                operator: Exists
+                              - key: cluster.open-cluster-management.io/unavailable
+                                operator: Exists
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: apps.open-cluster-management.io/v1beta1
+                          kind: GitOpsCluster
+                          metadata:
+                            name: gitops-cluster-{{ $mcs.metadata.name }}
+                            namespace: openshift-gitops
+                          spec:
+                            argoServer:
+                              cluster: local-cluster
+                              argoNamespace: openshift-gitops
+                            placementRef:
+                              kind: Placement
+                              apiVersion: cluster.open-cluster-management.io/v1beta1
+                              name: {{ $mcs.metadata.name }}-placement
+                              namespace: openshift-gitops
+                      {{- end }}{% endraw %}
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Create PlacementBinding for GitOps cluster integration
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: gitops-cluster-integration-binding
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          placementRef:
+            name: hub-cluster-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: gitops-cluster-integration
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Wait for GitOpsCluster resources to be created
+      kubernetes.core.k8s_info:
+        api_version: apps.open-cluster-management.io/v1beta1
+        kind: GitOpsCluster
+        namespace: openshift-gitops
+      args: "{{ k8s_auth_params }}"
+      register: gitops_clusters
+      until: gitops_clusters.resources | length > 0
+      retries: 30
+      delay: 10
+      run_once: true
+      ignore_errors: true
+    
+    - name: Create Policy for ArgoCD health monitoring
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: argocd-health-status
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: inform
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: argocd-health-status
+                  spec:
+                    remediationAction: inform
+                    severity: high
+                    object-templates-raw: |
+                      {% raw %}{{- range $argo := (lookup "argoproj.io/v1beta1" "ArgoCD" "" "").items }}
+                        {{- $selectors := list "app.kubernetes.io/name=argocd-applicationset-controller"
+                                               (printf "app.kubernetes.io/name=%s-dex-server" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-notifications-controller" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-redis" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-repo-server" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-server" $argo.metadata.name)
+                        }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: argoproj.io/v1beta1
+                          kind: ArgoCD
+                          metadata:
+                            name: {{ $argo.metadata.name }}
+                            namespace: {{ $argo.metadata.namespace }}
+                          status:
+                            server: Running
+                            notificationsController: Running
+                            applicationController: Running
+                            applicationSetController: Running
+                            sso: Running
+                            repo: Running
+                            phase: Available
+                            redis: Running
+                        {{- range $sel := $selectors }}
+                          {{- range $dep := (lookup "apps/v1" "Deployment" $argo.metadata.namespace "" $sel).items }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          kind: Deployment
+                          apiVersion: apps/v1
+                          metadata:
+                            name: {{ $dep.metadata.name }}
+                            namespace: {{ $dep.metadata.namespace }}
+                          status:
+                            replicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            updatedReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            readyReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            availableReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            conditions:
+                              {{- range $c := $dep.status.conditions }}
+                                {{- $_ := set $c "status" "True" }}
+                              - {{ $c | toRawJson | toLiteral }}
+                              {{- end }}
+                          {{- end }}
+                        {{- end }}
+                        {{- $ssSel := (printf "app.kubernetes.io/name=%s-application-controller" $argo.metadata.name) }}
+                        {{- range $sset := (lookup "apps/v1" "StatefulSet" $argo.metadata.namespace "" $ssSel).items }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          kind: StatefulSet
+                          apiVersion: apps/v1
+                          metadata:
+                            name: {{ $sset.metadata.name }}
+                            namespace: {{ $sset.metadata.namespace }}
+                          status:
+                            availableReplicas: {{ $sset.spec.replicas }}
+                            currentReplicas: {{ $sset.spec.replicas }}
+                            updatedReplicas: {{ $sset.spec.replicas }}
+                            replicas: {{ $sset.spec.replicas }}
+                            collisionCount: 0
+                            readyReplicas: {{ $sset.spec.replicas }}
+                        {{- end }}
+                      {{- end }}{% endraw %}
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+    
+    - name: Create PlacementBinding for ArgoCD health monitoring
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: argocd-health-status-binding
+        namespace: gitops-hub-policies
+        state: present
+        definition:
+          placementRef:
+            name: hub-cluster-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: argocd-health-status
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+      run_once: true
+
+    - name: Create namespace for SNO policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Policy for ArgoCD health monitoring on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: argocd-health-status-sno
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: inform
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: argocd-health-status-sno
+                  spec:
+                    remediationAction: inform
+                    severity: high
+                    object-templates-raw: |
+                      {% raw %}{{- range $argo := (lookup "argoproj.io/v1beta1" "ArgoCD" "" "").items }}
+                        {{- $selectors := list "app.kubernetes.io/name=argocd-applicationset-controller"
+                                               (printf "app.kubernetes.io/name=%s-dex-server" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-notifications-controller" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-redis" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-repo-server" $argo.metadata.name)
+                                               (printf "app.kubernetes.io/name=%s-server" $argo.metadata.name)
+                        }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: argoproj.io/v1beta1
+                          kind: ArgoCD
+                          metadata:
+                            name: {{ $argo.metadata.name }}
+                            namespace: {{ $argo.metadata.namespace }}
+                          status:
+                            server: Running
+                            notificationsController: Running
+                            applicationController: Running
+                            applicationSetController: Running
+                            sso: Running
+                            repo: Running
+                            phase: Available
+                            redis: Running
+                        {{- range $sel := $selectors }}
+                          {{- range $dep := (lookup "apps/v1" "Deployment" $argo.metadata.namespace "" $sel).items }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          kind: Deployment
+                          apiVersion: apps/v1
+                          metadata:
+                            name: {{ $dep.metadata.name }}
+                            namespace: {{ $dep.metadata.namespace }}
+                          status:
+                            replicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            updatedReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            readyReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            availableReplicas: '{{ $dep.spec.replicas | default 1 | toInt }}'
+                            conditions:
+                              {{- range $c := $dep.status.conditions }}
+                                {{- $_ := set $c "status" "True" }}
+                              - {{ $c | toRawJson | toLiteral }}
+                              {{- end }}
+                          {{- end }}
+                        {{- end }}
+                        {{- $ssSel := (printf "app.kubernetes.io/name=%s-application-controller" $argo.metadata.name) }}
+                        {{- range $sset := (lookup "apps/v1" "StatefulSet" $argo.metadata.namespace "" $ssSel).items }}
+                      - complianceType: musthave
+                        objectDefinition:
+                          kind: StatefulSet
+                          apiVersion: apps/v1
+                          metadata:
+                            name: {{ $sset.metadata.name }}
+                            namespace: {{ $sset.metadata.namespace }}
+                          status:
+                            availableReplicas: {{ $sset.spec.replicas }}
+                            currentReplicas: {{ $sset.spec.replicas }}
+                            updatedReplicas: {{ $sset.spec.replicas }}
+                            replicas: {{ $sset.spec.replicas }}
+                            collisionCount: 0
+                            readyReplicas: {{ $sset.spec.replicas }}
+                        {{- end }}
+                      {{- end }}{% endraw %}
+      args: "{{ k8s_auth_params }}"
+
+
     - name: Gather MetalLB configuration from all clusters
       ansible.builtin.set_fact:
         all_metallb_ranges: "{{ all_metallb_ranges | default([]) + [{'cluster': inventory_hostname, 'ranges': metallb_ip_address_ranges | default([])}] }}"
@@ -71,18 +557,100 @@
         state: "{{ operator_policy_action }}"
       args: "{{ k8s_auth_params }}"
 
+    - name: Remove old Local Storage Operator policy (if exists)
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-local-storage-operator
+        namespace: sno-operator-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      failed_when: false
+
+    - name: Remove old Local Storage configuration policies per cluster
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "configure-local-storage-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      failed_when: false
+
+    - name: Remove old Local Storage PlacementBindings per cluster
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: "binding-local-storage-{{ sno_cluster_name }}"
+        namespace: sno-operator-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      failed_when: false
+
+    - name: Create ManagedClusterSet for SNO clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSet
+        name: sno-demo
+        state: "{{ operator_policy_action }}"
+        definition:
+          spec: {}
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create ManagedClusterSetBinding for SNO policies
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          spec:
+            clusterSet: sno-demo
+      args: "{{ k8s_auth_params }}"
+
+    - name: Add SNO clusters to sno-demo ManagedClusterSet
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ sno_cluster_name }}"
+        state: present
+        definition:
+          metadata:
+            labels:
+              cluster.open-cluster-management.io/clusterset: sno-demo
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+
     - name: Create PlacementRule for SNO clusters
       kubernetes.core.k8s:
-        api_version: apps.open-cluster-management.io/v1
-        kind: PlacementRule
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
         name: sno-clusters-placement
         namespace: sno-operator-policies
         state: "{{ operator_policy_action }}"
         definition:
           spec:
-            clusterSelector:
-              matchLabels:
-                cluster-type: sno
+            clusterSets:
+              - sno-demo
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create PlacementBinding for ArgoCD health monitoring on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: argocd-health-status-sno-binding
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          placementRef:
+            name: sno-clusters-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: argocd-health-status-sno
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
       args: "{{ k8s_auth_params }}"
 
     - name: Create Policy for MetalLB Operator
@@ -127,7 +695,6 @@
                     severity: medium
                     complianceType: musthave
                     upgradeApproval: Automatic
-                    pruneObjectBehavior: DeleteIfCreated
                     subscription:
                       channel: stable
                       name: metallb-operator
@@ -135,63 +702,6 @@
                       source: redhat-operators
                       sourceNamespace: openshift-marketplace
       args: "{{ k8s_auth_params }}"
-
-    - name: Create Policy for Local Storage Operator
-      kubernetes.core.k8s:
-        api_version: policy.open-cluster-management.io/v1
-        kind: Policy
-        name: install-local-storage-operator
-        namespace: sno-operator-policies
-        state: "{{ operator_policy_action }}"
-        definition:
-          metadata:
-            annotations:
-              policy.open-cluster-management.io/standards: NIST SP 800-53
-              policy.open-cluster-management.io/categories: CM Configuration Management
-              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
-          spec:
-            remediationAction: enforce
-            disabled: false
-            policy-templates:
-              - objectDefinition:
-                  apiVersion: policy.open-cluster-management.io/v1
-                  kind: ConfigurationPolicy
-                  metadata:
-                    name: local-storage-operator-namespace
-                  spec:
-                    remediationAction: enforce
-                    severity: high
-                    object-templates:
-                      - complianceType: musthave
-                        objectDefinition:
-                          apiVersion: v1
-                          kind: Namespace
-                          metadata:
-                            name: openshift-local-storage
-              - objectDefinition:
-                  apiVersion: policy.open-cluster-management.io/v1beta1
-                  kind: OperatorPolicy
-                  metadata:
-                    name: local-storage-operator
-                  spec:
-                    operatorGroup:
-                      name: local-storage-operator-group
-                      namespace: openshift-local-storage
-                      targetNamespaces:
-                        - openshift-local-storage
-                    remediationAction: enforce
-                    severity: medium
-                    complianceType: musthave
-                    upgradeApproval: Automatic
-                    pruneObjectBehavior: DeleteIfCreated
-                    subscription:
-                      channel: stable
-                      name: local-storage-operator
-                      namespace: openshift-local-storage
-                      source: redhat-operators
-                      sourceNamespace: openshift-marketplace
-      args: "{{ k8s_auth_params }}"
-      when: sno_secondary_disk_device is defined and sno_secondary_disk_device != ""
 
     - name: Create Policy for LVM Storage Operator
       kubernetes.core.k8s:
@@ -240,11 +750,60 @@
                     severity: medium
                     complianceType: musthave
                     upgradeApproval: Automatic
-                    pruneObjectBehavior: DeleteIfCreated
                     subscription:
                       channel: stable-4.19
                       name: lvms-operator
                       namespace: openshift-lvm-storage
+                      source: redhat-operators
+                      sourceNamespace: openshift-marketplace
+      args: "{{ k8s_auth_params }}"
+
+    - name: Create Policy for OpenShift GitOps Operator
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: install-openshift-gitops-operator
+        namespace: sno-operator-policies
+        state: "{{ operator_policy_action }}"
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: CM Configuration Management
+              policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: openshift-gitops-operator-namespace
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Namespace
+                          metadata:
+                            name: openshift-gitops-operator
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1beta1
+                  kind: OperatorPolicy
+                  metadata:
+                    name: openshift-gitops-operator
+                  spec:
+                    remediationAction: enforce
+                    severity: medium
+                    complianceType: musthave
+                    upgradeApproval: Automatic
+                    subscription:
+                      channel: latest
+                      name: openshift-gitops-operator
+                      namespace: openshift-gitops-operator
                       source: redhat-operators
                       sourceNamespace: openshift-marketplace
       args: "{{ k8s_auth_params }}"
@@ -287,11 +846,11 @@
       args: "{{ k8s_auth_params }}"
       when: metallb_ip_address_ranges | default([]) | length > 0
 
-    - name: Create Policy for Local Storage configuration per cluster
+    - name: Create Policy for LVM Storage configuration per cluster
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: Policy
-        name: "configure-local-storage-{{ sno_cluster_name }}"
+        name: "configure-lvm-storage-{{ sno_cluster_name }}"
         namespace: sno-operator-policies
         state: "{{ operator_policy_action }}"
         definition:
@@ -308,87 +867,67 @@
                   apiVersion: policy.open-cluster-management.io/v1
                   kind: ConfigurationPolicy
                   metadata:
-                    name: local-storage-localvolume
+                    name: lvm-storage-lvmcluster
                   spec:
                     remediationAction: enforce
                     severity: medium
                     object-templates:
                       - complianceType: musthave
                         objectDefinition:
-                          apiVersion: local.storage.openshift.io/v1
-                          kind: LocalVolume
+                          apiVersion: lvm.topolvm.io/v1alpha1
+                          kind: LVMCluster
                           metadata:
-                            name: "{{ sno_cluster_name }}-local-storage"
-                            namespace: openshift-local-storage
+                            name: "{{ sno_cluster_name }}-lvmcluster"
+                            namespace: openshift-lvm-storage
                           spec:
-                            nodeSelector:
-                              nodeSelectorTerms:
-                                - matchExpressions:
-                                    - key: node-role.kubernetes.io/master
-                                      operator: Exists
-                            storageClassDevices:
-                              - storageClassName: "{{ sno_cluster_name }}-local-sc"
-                                volumeMode: Filesystem
-                                fsType: xfs
-                                devicePaths:
-                                  - "{{ sno_secondary_disk_device | default('/dev/vdb') }}"
-              - objectDefinition:
-                  apiVersion: policy.open-cluster-management.io/v1
-                  kind: ConfigurationPolicy
-                  metadata:
-                    name: local-storage-pvc
-                  spec:
-                    remediationAction: enforce
-                    severity: medium
-                    object-templates:
-                      - complianceType: musthave
-                        objectDefinition:
-                          apiVersion: v1
-                          kind: PersistentVolumeClaim
-                          metadata:
-                            name: "{{ sno_cluster_name }}-local-pvc"
-                            namespace: openshift-local-storage
-                          spec:
-                            accessModes:
-                              - ReadWriteOnce
-                            resources:
-                              requests:
-                                storage: "{{ sno_secondary_disk_size }}"
-                            storageClassName: "{{ sno_cluster_name }}-local-sc"
+                            storage:
+                              deviceClasses:
+                                - name: vg1
+                                  thinPoolConfig:
+                                    name: thin-pool-1
+                                    sizePercent: 90
+                                    overprovisionRatio: 10
+                                  deviceSelector:
+                                    paths:
+                                      - "{{ sno_secondary_disk_device | default('/dev/vdb') }}"
       args: "{{ k8s_auth_params }}"
-      when: sno_add_secondary_disk | default(false) | bool
+      when: sno_secondary_disk_device is defined and sno_secondary_disk_device != ""
 
-    - name: Add local storage policy to cluster placement
+    - name: Add LVM storage policy to cluster placement
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: PlacementBinding
-        name: "binding-local-storage-{{ sno_cluster_name }}"
+        name: "binding-lvm-storage-{{ sno_cluster_name }}"
         namespace: sno-operator-policies
         state: "{{ operator_policy_action }}"
         definition:
           placementRef:
             name: "{{ sno_cluster_name }}-placement"
-            kind: PlacementRule
-            apiGroup: apps.open-cluster-management.io
+            kind: Placement
+            apiGroup: cluster.open-cluster-management.io
           subjects:
-            - name: "configure-local-storage-{{ sno_cluster_name }}"
+            - name: "configure-lvm-storage-{{ sno_cluster_name }}"
               kind: Policy
               apiGroup: policy.open-cluster-management.io
       args: "{{ k8s_auth_params }}"
-      when: sno_add_secondary_disk | default(false) | bool
+      when: sno_secondary_disk_device is defined and sno_secondary_disk_device != ""
 
     - name: Create Placement for cluster-specific MetalLB config
       kubernetes.core.k8s:
-        api_version: apps.open-cluster-management.io/v1
-        kind: PlacementRule
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
         name: "{{ sno_cluster_name }}-placement"
         namespace: sno-operator-policies
         state: "{{ operator_policy_action }}"
         definition:
           spec:
-            clusterSelector:
-              matchLabels:
-                name: "{{ sno_cluster_name }}"
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      name: "{{ sno_cluster_name }}"
       args: "{{ k8s_auth_params }}"
       when: metallb_ip_address_ranges | default([]) | length > 0
 
@@ -402,8 +941,8 @@
         definition:
           placementRef:
             name: "{{ sno_cluster_name }}-placement"
-            kind: PlacementRule
-            apiGroup: apps.open-cluster-management.io
+            kind: Placement
+            apiGroup: cluster.open-cluster-management.io
           subjects:
             - name: "configure-metallb-{{ sno_cluster_name }}"
               kind: Policy
@@ -428,8 +967,8 @@
             description: Install required operators on SNO clusters
             policies:
               - install-metallb-operator
-              - install-local-storage-operator
               - install-lvm-storage-operator
+              - install-openshift-gitops-operator
       args: "{{ k8s_auth_params }}"
 
     - name: Create PlacementBinding for PolicySet
@@ -442,8 +981,8 @@
         definition:
           placementRef:
             name: sno-clusters-placement
-            kind: PlacementRule
-            apiGroup: apps.open-cluster-management.io
+            kind: Placement
+            apiGroup: cluster.open-cluster-management.io
           subjects:
             - name: sno-operators-policyset
               kind: PolicySet
@@ -466,28 +1005,9 @@
               - "Action: Enabling Submariner for inter-cluster connectivity"
               - "=========================================="
 
-        - name: Create ManagedClusterSet for Submariner
-          kubernetes.core.k8s:
-            api_version: cluster.open-cluster-management.io/v1beta2
-            kind: ManagedClusterSet
-            name: sno-clusterset
-            state: present
-            definition:
-              spec: {}
-          args: "{{ k8s_auth_params }}"
-
-        - name: Add clusters to ManagedClusterSet
-          kubernetes.core.k8s:
-            api_version: cluster.open-cluster-management.io/v1
-            kind: ManagedCluster
-            name: "{{ item.cluster }}"
-            state: present
-            definition:
-              metadata:
-                labels:
-                  cluster.open-cluster-management.io/clusterset: sno-clusterset
-          args: "{{ k8s_auth_params }}"
-          loop: "{{ all_metallb_ranges }}"
+        - name: Update ManagedClusterSet for Submariner (already exists as sno-demo)
+          ansible.builtin.debug:
+            msg: "Using existing sno-demo ManagedClusterSet for Submariner"
 
         - name: Create namespace for Submariner broker
           kubernetes.core.k8s:
@@ -540,13 +1060,14 @@
           - "PolicySet: sno-operators-policyset"
           - "Policies:"
           - "  - install-metallb-operator"
-          - "  - install-local-storage-operator"
           - "  - install-lvm-storage-operator"
+          - "  - install-openshift-gitops-operator"
           - "{{ '  - configure-metallb-' + sno_cluster_name + ' (IPAddressPool)' if metallb_ip_address_ranges | default([]) | length > 0 else '' }}"
-          - "{{ '  - configure-local-storage-' + sno_cluster_name + ' (LocalVolume + PVC on ' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_add_secondary_disk | default(false) | bool else '' }}"
+          - "{{ '  - configure-lvm-storage-' + sno_cluster_name + ' (LVMCluster on ' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_secondary_disk_device is defined and sno_secondary_disk_device != '' else '' }}"
           - "Placement: sno-clusters-placement"
-          - "Target: Clusters with label 'cluster-type: sno'"
+          - "ManagedClusterSet: sno-demo"
+          - "Target: Clusters in sno-demo clusterset"
           - "{{ 'MetalLB IP Ranges: ' + (metallb_ip_address_ranges | join(', ')) if metallb_ip_address_ranges | default([]) | length > 0 else 'MetalLB IP Ranges: Not configured' }}"
-          - "{{ 'Secondary Disk: Enabled (' + sno_secondary_disk_size + ')' if sno_add_secondary_disk | default(false) | bool else 'Secondary Disk: Disabled' }}"
+          - "{{ 'Secondary Disk: Enabled (' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_secondary_disk_device is defined and sno_secondary_disk_device != '' else 'Secondary Disk: Disabled' }}"
           - "{{ 'Submariner: ENABLED (subnets not shared)' if metallb_subnets_shared is defined and not metallb_subnets_shared else 'Submariner: Not required (shared subnet)' if metallb_subnets_shared is defined else '' }}"
           - "=========================================="
