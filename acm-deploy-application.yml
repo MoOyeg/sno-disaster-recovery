@@ -584,15 +584,15 @@
       retries: 10
       delay: 5
     
-    - name: Wait for VolSync ReplicationSource ApplicationSet to be created
+    - name: Wait for VolSync ReplicationSource Policy to be created
       kubernetes.core.k8s_info:
-        api_version: argoproj.io/v1alpha1
-        kind: ApplicationSet
-        name: volsync-replicationsource-appset
-        namespace: openshift-gitops
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-replicationsource
+        namespace: volsync-policies
       args: "{{ k8s_auth_params }}"
-      register: volsync_source_appset_status
-      until: volsync_source_appset_status.resources | length > 0
+      register: volsync_source_policy_status
+      until: volsync_source_policy_status.resources | length > 0
       retries: 10
       delay: 5
     
@@ -615,19 +615,18 @@
           - "Application: quarkus-mysql-app"
           - "ApplicationSet: quarkus-mysql-appset"
           - "VolSync Destination ApplicationSet: volsync-replicationdestination-appset"
-          - "VolSync Source ApplicationSet: volsync-replicationsource-appset"
+          - "VolSync Source Policy: volsync-replicationsource (ACM Policy)"
           - "Namespace: openshift-gitops"
           - "Git Repository: {{ git_repo_url }}"
           - "Git Path (App): {{ git_repo_path }}"
           - "Git Path (VolSync Destination): app/volsync/destination"
-          - "Git Path (VolSync Source): app/volsync/source"
           - "Git Branch: {{ git_repo_branch }}"
           - "Target Namespace: {{ application_namespace }}"
           - ""
           - "Placements:"
           - "- Active Cluster: sno-app-placement-active ({{ selected_cluster }})"
           - "  * Quarkus Application"
-          - "  * VolSync ReplicationSource"
+          - "  * VolSync ReplicationSource (via ACM Policy)"
           - "- Standby Clusters: sno-app-placement-standby"
           - "  * VolSync ReplicationDestination"
           - "- All SNO Clusters: sno-app-placement"
@@ -644,14 +643,16 @@
           - ""
           - "VolSync Configuration:"
           - "- ReplicationDestination deployed on standby clusters (LoadBalancer)"
-          - "- ReplicationSource deployed on active cluster"
+          - "- ReplicationSource deployed on active cluster via ACM Policy"
+          - "- Policy automatically discovers ReplicationDestination address"
           - "- Replication schedule: Every 5 minutes"
           - "- Ready for disaster recovery scenarios"
           - ""
-          - "IMPORTANT: Configure ReplicationDestination Address"
-          - "After ReplicationDestination is created, get its address from standby cluster:"
-          - "  oc get replicationdestination mysql-replicationdestination -n {{ application_namespace }} -o jsonpath='{.status.rsyncTLS.address}'"
-          - "Update the ReplicationSource manifest with the destination address."
+          - "ACM Policy Details:"
+          - "- Policy: volsync-replicationsource"
+          - "- Namespace: volsync-policies"
+          - "- Uses template lookup to find ReplicationDestination address"
+          - "- Automatically creates ReplicationSource with correct address"
           - "=========================================="
           - ""
           - "Next Steps:"
@@ -661,10 +662,17 @@
           - "2. Check RBAC policy status:"
           - "   oc get policy gitops-app-namespace-rbac -n gitops-rbac-policies"
           - ""
-          - "3. Access ArgoCD UI:"
+          - "3. Check VolSync policy status:"
+          - "   oc get policy volsync-replicationsource -n volsync-policies"
+          - ""
+          - "4. Access ArgoCD UI:"
           - "   oc get route openshift-gitops-server -n openshift-gitops"
           - ""
-          - "4. Check application on target clusters:"
+          - "5. Check application on target clusters:"
           - "   oc get pods -n {{ application_namespace }}"
           - "   oc get route -n {{ application_namespace }}"
+          - ""
+          - "6. Verify VolSync replication:"
+          - "   oc get replicationdestination -n {{ application_namespace }}"
+          - "   oc get replicationsource -n {{ application_namespace }}"
           - "=========================================="
