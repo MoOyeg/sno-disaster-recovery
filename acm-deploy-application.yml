@@ -165,9 +165,13 @@
       loop: "{{ sno_cluster_list }}"
       when: item != selected_cluster
     
+    - name: Set standby cluster list
+      ansible.builtin.set_fact:
+        standby_cluster_list: "{{ sno_cluster_list | difference([selected_cluster]) }}"
+    
     - name: Generate VolSync rsync-tls secret value
-      ansible.builtin.command:
-        cmd: openssl rand -hex 32
+      ansible.builtin.shell:
+        cmd: echo "volsync:$(openssl rand -hex 32)"
       register: volsync_secret_key
       changed_when: false
     
@@ -493,10 +497,9 @@
               - requiredClusterSelector:
                   labelSelector:
                     matchExpressions:
-                      - key: app-role
+                      - key: name
                         operator: In
-                        values:
-                          - standby
+                        values: {{ standby_cluster_list | to_json }}
       args: "{{ k8s_auth_params }}"
     
     - name: Create ApplicationSet for Quarkus MySQL App

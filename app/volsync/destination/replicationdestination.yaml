@@ -5,8 +5,9 @@ metadata:
   name: mysql-replicationdestination
   namespace: quarkus-web-app
 spec:
+  destinationPVC: mysql-pvc
   trigger:
-    schedule: "*/5 * * * *"
+    schedule: "*/2 * * * *"
   rsyncTLS:
     serviceType: LoadBalancer
     copyMethod: Snapshot
