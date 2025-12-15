@@ -499,7 +499,7 @@
                     matchExpressions:
                       - key: name
                         operator: In
-                        values: {{ standby_cluster_list | to_json }}
+                        values: "{{ standby_cluster_list }}"
       args: "{{ k8s_auth_params }}"
     
     - name: Create ApplicationSet for Quarkus MySQL App

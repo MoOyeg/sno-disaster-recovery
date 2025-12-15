@@ -5,15 +5,16 @@ metadata:
   name: mysql-replicationdestination
   namespace: quarkus-web-app
 spec:
-  destinationPVC: mysql-pvc
+  
   trigger:
     schedule: "*/2 * * * *"
   rsyncTLS:
     serviceType: LoadBalancer
     copyMethod: Snapshot
-    capacity: 1Gi
-    accessModes:
-      - ReadWriteOnce
+    # capacity: 1Gi
+    destinationPVC: mysql-pvc
+    # accessModes:
+    #   - ReadWriteOnce
     storageClassName: lvms-vg1
     keySecret: volsync-rsync-tls-mysql-replicationsource
     volumeSnapshotClassName: lvms-vg1
