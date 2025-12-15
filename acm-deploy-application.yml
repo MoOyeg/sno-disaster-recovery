@@ -165,6 +165,12 @@
       loop: "{{ sno_cluster_list }}"
       when: item != selected_cluster
     
+    - name: Generate VolSync rsync-tls secret value
+      ansible.builtin.command:
+        cmd: openssl rand -hex 32
+      register: volsync_secret_key
+      changed_when: false
+    
     - name: Create namespace for GitOps RBAC policies
       kubernetes.core.k8s:
         api_version: v1
@@ -350,6 +356,89 @@
           - "4. RoleBinding granting GitOps SA admin access"
           - "=========================================="
     
+    - name: Create Policy for VolSync rsync-tls Secret on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-rsync-tls-secret
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: SC System and Communications Protection
+              policy.open-cluster-management.io/controls: SC-8 Transmission Confidentiality and Integrity
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: volsync-rsync-tls-secret
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: v1
+                          kind: Secret
+                          metadata:
+                            name: volsync-rsync-tls-mysql-replicationsource
+                            namespace: "{{ application_namespace }}"
+                          type: Opaque
+                          stringData:
+                            psk.txt: "{{ volsync_secret_key.stdout }}"
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create PlacementBinding for VolSync Secret Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-rsync-tls-secret-binding
+        namespace: gitops-rbac-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-gitops-rbac-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: volsync-rsync-tls-secret
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Wait for VolSync Secret Policy to be created and distributed
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-rsync-tls-secret
+        namespace: gitops-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_policy_status
+      until: volsync_policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+    
+    - name: Display VolSync Secret policy status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "VolSync rsync-tls Secret Policy Created"
+          - "=========================================="
+          - "Policy: volsync-rsync-tls-secret"
+          - "Namespace: gitops-rbac-policies"
+          - "Target: All SNO clusters in sno-demo"
+          - ""
+          - "The policy will ensure:"
+          - "Secret 'volsync-rsync-tls-mysql-replicationsource' exists in {{ application_namespace }}"
+          - "Secret contains PSK for rsync-tls replication"
+          - "=========================================="
+    
     - name: Create Placement for active SNO cluster
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
@@ -510,56 +599,6 @@
                       maxDuration: 3m
       args: "{{ k8s_auth_params }}"
     
-    - name: Create ApplicationSet for VolSync ReplicationSource on Active Cluster
-      kubernetes.core.k8s:
-        api_version: argoproj.io/v1alpha1
-        kind: ApplicationSet
-        name: volsync-replicationsource-appset
-        namespace: openshift-gitops
-        state: present
-        definition:
-          spec:
-            generators:
-              - clusterDecisionResource:
-                  configMapRef: acm-placement
-                  labelSelector:
-                    matchLabels:
-                      cluster.open-cluster-management.io/placement: "sno-app-placement-active"
-                  requeueAfterSeconds: 180
-            template:
-              metadata:
-                annotations:
-                  apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
-                  apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
-                  argocd.argoproj.io/skip-reconcile: "true"
-                labels:
-                  apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
-                  velero.io/exclude-from-backup: 'true'
-                name: "volsync-replicationsource-{{ '{{name}}' }}"
-              spec:
-                project: default
-                source:
-                  repoURL: "{{ git_repo_url }}"
-                  targetRevision: "{{ git_repo_branch }}"
-                  path: app/volsync/source
-                destination:
-                  server: "{{ '{{server}}' }}"
-                  namespace: "{{ application_namespace }}"
-                syncPolicy:
-                  automated:
-                    prune: true
-                    selfHeal: true
-                  syncOptions:
-                    - CreateNamespace=true
-                    - PruneLast=true
-                  retry:
-                    limit: 5
-                    backoff:
-                      duration: 5s
-                      factor: 2
-                      maxDuration: 3m
-      args: "{{ k8s_auth_params }}"
-    
     - name: Wait for ReplicationDestination to be ready on standby clusters
       ansible.builtin.pause:
         seconds: 30
@@ -646,18 +685,6 @@
       args: "{{ k8s_auth_params }}"
       register: volsync_appset_status
       until: volsync_appset_status.resources | length > 0
-      retries: 10
-      delay: 5
-    
-    - name: Wait for VolSync ReplicationSource Policy to be created
-      kubernetes.core.k8s_info:
-        api_version: policy.open-cluster-management.io/v1
-        kind: Policy
-        name: volsync-replicationsource
-        namespace: volsync-policies
-      args: "{{ k8s_auth_params }}"
-      register: volsync_source_policy_status
-      until: volsync_source_policy_status.resources | length > 0
       retries: 10
       delay: 5
     

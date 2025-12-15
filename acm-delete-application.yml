@@ -6,7 +6,8 @@
   
   vars:
     acm_namespace: "open-cluster-management"
-    application_namespace: "quarkus-mysql-app"
+    application_namespace: "quarkus-web-app"
+    gitops_rbac_namespace: "gitops-rbac-policies"
   
   tasks:
     - name: Setup authentication parameters for hub cluster
@@ -14,13 +15,24 @@
         name: sno_prerequisites
         tasks_from: auth_check
     
-    - name: Check if application namespace exists
+    - name: Get all managed clusters
       kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Namespace
-        name: "{{ application_namespace }}"
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
       args: "{{ k8s_auth_params }}"
-      register: namespace_check
+      register: managed_clusters
+      ignore_errors: true
+    
+    - name: Filter SNO clusters (exclude hub)
+      ansible.builtin.set_fact:
+        sno_cluster_list: "{{ managed_clusters.resources | selectattr('metadata.name', '!=', 'local-cluster') | map(attribute='metadata.name') | list }}"
+      when: managed_clusters.resources is defined
+    
+    - name: Check if kubeconfig files exist for SNO clusters
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/artifacts/{{ item }}/kubeconfig"
+      register: kubeconfig_files
+      loop: "{{ sno_cluster_list | default([]) }}"
       ignore_errors: true
     
     - name: Display deletion plan
@@ -29,18 +41,28 @@
           - "=========================================="
           - "APPLICATION DELETION PLAN"
           - "=========================================="
-          - "Namespace: {{ application_namespace }}"
           - "This will delete:"
-          - "  - ApplicationSet (quarkus-mysql-appset)"
-          - "  - Placement (sno-app-placement)"
-          - "  - Placement (sno-app-placement-active)"
-          - "  - ManagedClusterSetBinding (sno-demo)"
-          - "  - RBAC resources (Role, RoleBinding)"
-          - "  - Namespace ({{ application_namespace }})"
           - ""
-          - "Note: cluster labels (cluster-type, app-role) will be removed"
+          - "Hub Cluster Resources:"
+          - "  - ApplicationSets (quarkus-mysql-appset, volsync-replicationdestination-appset)"
+          - "  - Placements (sno-app-placement, sno-app-placement-active, sno-app-placement-standby)"
+          - "  - ManagedClusterSetBinding (sno-demo) in openshift-gitops"
+          - "  - Role and RoleBinding for GitOps in openshift-gitops"
+          - ""
+          - "  - Policy (gitops-app-namespace-rbac) in {{ gitops_rbac_namespace }}"
+          - "  - Policy (volsync-rsync-tls-secret) in {{ gitops_rbac_namespace }}"
+          - "  - PlacementBindings for GitOps RBAC and VolSync Secret"
+          - "  - Placement (sno-gitops-rbac-placement) in {{ gitops_rbac_namespace }}"
+          - "  - ManagedClusterSetBinding (sno-demo) in {{ gitops_rbac_namespace }}"
+          - "  - Namespace ({{ gitops_rbac_namespace }})"
+          - ""
+          - "SNO Cluster Resources (if kubeconfig available):"
+          - "  - ReplicationSource (mysql-replicationsource) on active cluster"
+          - "  - Application workloads deployed by ArgoCD"
+          - ""
+          - "Cluster Labels:"
+          - "  - Remove cluster-type and app-role labels from all SNO clusters"
           - "=========================================="
-      when: namespace_check.resources | length > 0
     
     - name: Confirm deletion
       ansible.builtin.pause:
@@ -48,36 +70,82 @@
           
           Are you sure you want to delete the application? (yes/no)
       register: delete_confirm
-      when: namespace_check.resources | length > 0
     
     - name: Fail if deletion not confirmed
       ansible.builtin.fail:
         msg: "Application deletion cancelled by user"
-      when:
-        - namespace_check.resources | length > 0
-        - delete_confirm.user_input | lower not in ['yes', 'y']
+      when: delete_confirm.user_input | lower not in ['yes', 'y']
     
-    - name: Delete ApplicationSet
+    - name: Delete ReplicationSource from active cluster (if kubeconfig available)
+      kubernetes.core.k8s:
+        api_version: volsync.backube/v1alpha1
+        kind: ReplicationSource
+        name: mysql-replicationsource
+        namespace: "{{ application_namespace }}"
+        state: absent
+        kubeconfig: "{{ playbook_dir }}/artifacts/{{ item.item }}/kubeconfig"
+      loop: "{{ kubeconfig_files.results }}"
+      when:
+        - item.stat.exists | default(false)
+        - managed_clusters.resources | selectattr('metadata.name', 'equalto', item.item) | selectattr('metadata.labels.app-role', 'defined') | selectattr('metadata.labels.app-role', 'equalto', 'active') | list | length > 0
+      loop_control:
+        label: "{{ item.item }}"
+      ignore_errors: true
+    
+    - name: Delete ApplicationSet for Quarkus MySQL App
       kubernetes.core.k8s:
         api_version: argoproj.io/v1alpha1
         kind: ApplicationSet
-        name: quarkus-mysql-app
-        namespace: "{{ application_namespace }}"
+        name: quarkus-mysql-appset
+        namespace: openshift-gitops
         state: absent
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
-    - name: Wait for ApplicationSet deletion
+    - name: Delete ApplicationSet for VolSync ReplicationDestination
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: volsync-replicationdestination-appset
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for ApplicationSets deletion
       kubernetes.core.k8s_info:
         api_version: argoproj.io/v1alpha1
         kind: ApplicationSet
-        name: quarkus-mysql-app
-        namespace: "{{ application_namespace }}"
+        name: "{{ item }}"
+        namespace: openshift-gitops
       args: "{{ k8s_auth_params }}"
       register: appset_check
       until: appset_check.resources | length == 0
       retries: 30
       delay: 2
+      loop:
+        - quarkus-mysql-appset
+        - volsync-replicationdestination-appset
+      ignore_errors: true
+    
+    - name: Delete Placement for standby SNO clusters
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement-standby
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete Placement for active SNO cluster
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-app-placement-active
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
     - name: Delete Placement for all SNO clusters
@@ -85,19 +153,136 @@
         api_version: cluster.open-cluster-management.io/v1beta1
         kind: Placement
         name: sno-app-placement
-        namespace: "{{ application_namespace }}"
+        namespace: openshift-gitops
         state: absent
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
-    - name: Delete Placement for active cluster
+    - name: Delete Role for PlacementDecision reading
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: Role
+        name: read-placementdecisions
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete RoleBinding for GitOps service account
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        name: gitops-read-placementdecisions
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding from openshift-gitops
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete PlacementBinding for VolSync Secret Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-rsync-tls-secret-binding
+        namespace: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete PlacementBinding for GitOps RBAC Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: gitops-app-namespace-rbac-placement-binding
+        namespace: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete Policy for VolSync rsync-tls Secret
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-rsync-tls-secret
+        namespace: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete Policy for GitOps RBAC
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: gitops-app-namespace-rbac
+        namespace: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for Policies deletion
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item }}"
+        namespace: "{{ gitops_rbac_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: policy_check
+      until: policy_check.resources | length == 0
+      retries: 30
+      delay: 2
+      loop:
+        - gitops-app-namespace-rbac
+        - volsync-rsync-tls-secret
+      ignore_errors: true
+    
+    - name: Delete Placement for SNO clusters (RBAC)
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
         kind: Placement
-        name: sno-app-placement-active
-        namespace: "{{ application_namespace }}"
+        name: sno-gitops-rbac-placement
+        namespace: "{{ gitops_rbac_namespace }}"
         state: absent
       args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding from gitops-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete gitops-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ gitops_rbac_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Wait for gitops-rbac-policies namespace deletion
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ gitops_rbac_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: rbac_ns_check
+      until: rbac_ns_check.resources | length == 0
+      retries: 60
+      delay: 5
       ignore_errors: true
     
     - name: Get all managed clusters with app labels
@@ -125,35 +310,19 @@
       when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
       ignore_errors: true
     
-    - name: Delete ManagedClusterSetBinding
+    - name: Remove cluster-type label from clusters
       kubernetes.core.k8s:
-        api_version: cluster.open-cluster-management.io/v1beta2
-        kind: ManagedClusterSetBinding
-        name: sno-demo
-        namespace: "{{ application_namespace }}"
-        state: absent
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.metadata.name }}"
+        state: patched
+        definition:
+          metadata:
+            labels:
+              cluster-type: null
       args: "{{ k8s_auth_params }}"
-      ignore_errors: true
-    
-    - name: Delete namespace
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: Namespace
-        name: "{{ application_namespace }}"
-        state: absent
-      args: "{{ k8s_auth_params }}"
-      ignore_errors: true
-    
-    - name: Wait for namespace deletion
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Namespace
-        name: "{{ application_namespace }}"
-      args: "{{ k8s_auth_params }}"
-      register: ns_check
-      until: ns_check.resources | length == 0
-      retries: 60
-      delay: 5
+      loop: "{{ labeled_clusters.resources }}"
+      when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
       ignore_errors: true
     
     - name: Display deletion summary
@@ -162,21 +331,21 @@
           - "=========================================="
           - "APPLICATION DELETION COMPLETE"
           - "=========================================="
-          - "Namespace '{{ application_namespace }}' has been removed"
-          - "All application resources have been deleted"
+          - "Deleted Resources:"
           - ""
-          - "Note: Application deployments on target clusters"
-          - "will be cleaned up automatically by ArgoCD"
+          - "Hub Cluster (ACM Hub):"
+          - "  ✓ ApplicationSets removed"
+          - "  ✓ Placements removed"
+          - "  ✓ ManagedClusterSetBindings removed"
+          - "  ✓ RBAC resources removed"
+          - "  ✓ GitOps RBAC Policy removed"
+          - "  ✓ Namespace '{{ gitops_rbac_namespace }}' removed"
+          - ""
+          - "SNO Clusters:"
+          - "  ✓ Cluster labels (cluster-type, app-role) removed"
+          - "  ✓ ReplicationSource removed (if kubeconfig available)"
+          - "  ✓ Application workloads cleaned up by ArgoCD"
+          - ""
+          - "Note: ArgoCD will automatically clean up deployed"
+          - "applications on SNO clusters due to ApplicationSet deletion"
           - "=========================================="
-      when: namespace_check.resources | length > 0
-    
-    - name: Display message if nothing to delete
-      ansible.builtin.debug:
-        msg:
-          - "=========================================="
-          - "NO APPLICATION FOUND"
-          - "=========================================="
-          - "Namespace '{{ application_namespace }}' does not exist"
-          - "Nothing to delete"
-          - "=========================================="
-      when: namespace_check.resources | length == 0
