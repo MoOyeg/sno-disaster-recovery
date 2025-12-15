@@ -1,0 +1,16 @@
+---
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationSource
+metadata:
+  name: mysql-replicationsource
+  namespace: quarkus-web-app
+spec:
+  sourcePVC: mysql-pvc
+  trigger:
+    schedule: "*/5 * * * *"
+  rsyncTLS:
+    keySecret: volsync-rsync-tls-mysql-replicationsource
+    address: "REPLICATION_DESTINATION_ADDRESS"
+    copyMethod: Snapshot
+    storageClassName: lvms-vg1
+    volumeSnapshotClassName: lvms-vg1
