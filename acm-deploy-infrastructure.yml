@@ -1,4 +1,147 @@
 ---
+- name: Import All SNO Clusters into ACM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+    
+    - name: Find all cluster kubeconfig files in credentials directory
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/credentials"
+        patterns: "kubeconfig"
+        recurse: yes
+        file_type: file
+      register: found_kubeconfigs
+      when: acm_check.resources | length > 0
+    
+    - name: Build list of clusters to import
+      ansible.builtin.set_fact:
+        clusters_to_import: >-
+          {{
+            found_kubeconfigs.files |
+            map('dict2items') |
+            flatten |
+            selectattr('key', 'equalto', 'path') |
+            map(attribute='value') |
+            map('regex_replace', '^.*/credentials/([^/]+)/.*$', '\1') |
+            unique |
+            list
+          }}
+      when: acm_check.resources | length > 0 and found_kubeconfigs.files is defined
+    
+    - name: Check for existing ManagedCluster resources
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: existing_clusters
+      loop: "{{ clusters_to_import | default([]) }}"
+      when: acm_check.resources | length > 0
+    
+    - name: Build list of clusters needing import
+      ansible.builtin.set_fact:
+        clusters_needing_import: >-
+          {{
+            existing_clusters.results |
+            selectattr('resources', 'defined') |
+            selectattr('resources', 'eq', []) |
+            map(attribute='item') |
+            list
+          }}
+      when: acm_check.resources | length > 0 and existing_clusters.results is defined
+    
+    - name: Display import status
+      ansible.builtin.debug:
+        msg:
+          - "Total clusters found: {{ clusters_to_import | default([]) | length }}"
+          - "Clusters already imported: {{ (clusters_to_import | default([]) | length) - (clusters_needing_import | default([]) | length) }}"
+          - "Clusters needing import: {{ clusters_needing_import | default([]) | length }}"
+          - "{{ clusters_needing_import | default([]) }}"
+      when: acm_check.resources | length > 0
+    
+    - name: Check if cluster kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/credentials/{{ item }}/auth/kubeconfig"
+      register: kubeconfig_checks
+      loop: "{{ clusters_needing_import | default([]) }}"
+      when: acm_check.resources | length > 0
+    
+    - name: Read cluster kubeconfigs
+      ansible.builtin.slurp:
+        src: "{{ item.stat.path }}"
+      register: kubeconfig_contents
+      when: acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create namespaces for managed clusters
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item.item }}"
+        state: present
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create auto-import secrets
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: auto-import-secret
+        namespace: "{{ item.item.item }}"
+        state: present
+        definition:
+          type: Opaque
+          stringData:
+            autoImportRetry: "5"
+            kubeconfig: "{{ item.content | b64decode }}"
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources | length > 0 and item.item.stat.exists
+      loop: "{{ kubeconfig_contents.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+    
+    - name: Create ManagedCluster resources
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.item }}"
+        state: present
+        definition:
+          metadata:
+            labels:
+              name: "{{ item.item }}"
+              cluster-type: sno
+              cluster.open-cluster-management.io/clusterset: sno-demo
+              addons.open-cluster-management.io/volsync: "true"
+              addons.open-cluster-management.io/managed-serviceaccount: "true"
+          spec:
+            hubAcceptsClient: true
+            leaseDurationSeconds: 60
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
 - name: Deploy infrastructure to SNO clusters via ACM Policy
   hosts: sno_clusters
   gather_facts: false
@@ -609,19 +752,6 @@
             clusterSet: sno-demo
       args: "{{ k8s_auth_params }}"
 
-    - name: Add SNO clusters to sno-demo ManagedClusterSet
-      kubernetes.core.k8s:
-        api_version: cluster.open-cluster-management.io/v1
-        kind: ManagedCluster
-        name: "{{ sno_cluster_name }}"
-        state: present
-        definition:
-          metadata:
-            labels:
-              cluster.open-cluster-management.io/clusterset: sno-demo
-      args: "{{ k8s_auth_params }}"
-      when: operator_policy_action == "present"
-
     - name: Create PlacementRule for SNO clusters
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
@@ -633,6 +763,11 @@
           spec:
             clusterSets:
               - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
       args: "{{ k8s_auth_params }}"
 
     - name: Create PlacementBinding for ArgoCD health monitoring on SNO clusters

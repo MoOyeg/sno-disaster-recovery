@@ -298,7 +298,9 @@ Commands:
     build           Build the Ansible container image
     deploy          Deploy SNO cluster on OpenShift Virtualization
     destroy         Destroy SNO cluster
-    acm             Import deployed cluster into ACM
+    acm             Import deployed cluster into ACM (single cluster)
+    acmimport       Import all clusters from credentials/ into ACM
+    acmremove       Remove all clusters from ACM
     operators       Deploy operators to SNO clusters via ACM policies
     deleteoperators Delete operator policies from ACM (does not uninstall operators)
     deployapp       Deploy Quarkus MySQL application via ACM and ArgoCD
@@ -318,6 +320,8 @@ Examples:
     $0 deploy
     $0 deploy --limit sno-cluster-01 -v
     $0 destroy
+    $0 acmimport
+    $0 acmremove
     $0 operators
     $0 deleteoperators
     $0 deployapp
@@ -363,6 +367,18 @@ case "${1:-}" in
         build_image
         shift
         run_ansible "acm-import.yml" "$@"
+        ;;
+    
+    acmimport)
+        build_image
+        shift
+        run_ansible "acm-import-all.yml" "$@"
+        ;;
+    
+    acmremove)
+        build_image
+        shift
+        run_ansible "acm-remove-all.yml" "$@"
         ;;
     
     operators)

@@ -1,0 +1,349 @@
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-source-hub-views
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: vs-source-create-views
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{- range $managedCluster := (lookup "cluster.open-cluster-management.io/v1" "ManagedCluster" "" "").items }}
+            {{- if and (ne (index $managedCluster.metadata.labels "name") "local-cluster") (ne (index $managedCluster.metadata.labels "app-role") "active") }}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: view.open-cluster-management.io/v1beta1
+                kind: ManagedClusterView
+                metadata:
+                  name: volsync-dest-info-quarkus-web-app
+                  namespace: quarkus-web-app
+                spec:
+                  scope:
+                    name: quarkus-mysql-volsync-destination-standby
+                    namespace: quarkus-web-app
+                    resource: replicationdestinations
+                    apiGroup: volsync.backube
+                    version: v1alpha1
+            {{- end }}
+            {{- end }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-source-active
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: vs-source-create-replicationsource
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{- range $mcv := "{{hub (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "quarkus-web-app" "").items }}" }}
+            {{- if $mcv.status.result }}
+            {{- $dest := $mcv.status.result }}
+            {{- if $dest.status.rsyncTLS.address }}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: volsync.backube/v1alpha1
+                kind: ReplicationSource
+                metadata:
+                  name: {{ $dest.spec.rsyncTLS.destinationPVC }}-replicationsource
+                  namespace: quarkus-web-app
+                spec:
+                  sourcePVC: {{ $dest.spec.rsyncTLS.destinationPVC }}
+                  trigger:
+                    schedule: "*/5 * * * *"
+                  rsyncTLS:
+                    keySecret: {{ $dest.spec.rsyncTLS.keySecret }}
+                    address: {{ $dest.status.rsyncTLS.address | quote }}
+                    copyMethod: Snapshot
+                    {{- if $dest.spec.rsyncTLS.storageClassName }}
+                    storageClassName: {{ $dest.spec.rsyncTLS.storageClassName }}
+                    {{- end }}
+                    {{- if $dest.spec.rsyncTLS.volumeSnapshotClassName }}
+                    volumeSnapshotClassName: {{ $dest.spec.rsyncTLS.volumeSnapshotClassName }}
+                    {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-dest-active-del
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: volsync-destination-delete-active
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{- range $volsyncdest := (lookup "volsync.backube/v1alpha1" "ReplicationDestination" "" "").items }}
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: volsync.backube/v1alpha1
+                kind: ReplicationDestination
+                metadata:
+                  name: {{ $volsyncdest.metadata.name }}
+                  namespace: {{ $volsyncdest.metadata.namespace }}
+            {{- end }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-source-standby-del
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: volsync-replicationsource-delete-standby
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{- range $volsyncsrc := (lookup "volsync.backube/v1alpha1" "ReplicationSource" "" "").items }}
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: volsync.backube/v1alpha1
+                kind: ReplicationSource
+                metadata:
+                  name: {{ $volsyncsrc.metadata.name }}
+                  namespace: {{ $volsyncsrc.metadata.namespace }}
+            {{- end }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-dest-standby
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: volsync-destination-pvc-standby
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: volsync.backube/v1alpha1
+                kind: ReplicationDestination
+                metadata:
+                  name: quarkus-mysql-volsync-destination-standby
+                  namespace: quarkus-web-app
+                spec:
+                  trigger:
+                    schedule: "*/2 * * * *"
+                  rsyncTLS:
+                    serviceType: LoadBalancer
+                    copyMethod: Snapshot
+                    destinationPVC: mysql-pvc
+                    storageClassName: lvms-vg1
+                    keySecret: volsync-rsync-tls-mysql-replicationsource
+                    volumeSnapshotClassName: lvms-vg1
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-source-hub-views
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-hub
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-source-hub-views
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-dest-active-del
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-active
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-dest-active-del
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-source-active
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-active
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-source-active
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-source-standby-del
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-standby
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-source-standby-del
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-dest-standby
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-standby
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-dest-standby
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: sno-app-placement-hub
+  namespace: open-cluster-management-global-set
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: name
+              operator: In
+              values:
+                - local-cluster
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: sno-app-placement-active
+  namespace: open-cluster-management-global-set
+spec:
+  clusterSets:
+    - sno-demo
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: app-role
+              operator: In
+              values:
+                - active
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: sno-app-placement-standby
+  namespace: open-cluster-management-global-set
+spec:
+  clusterSets:
+    - sno-demo
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: app-role
+              operator: NotIn
+              values:
+                - active
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: sno-app-placement-active
+  namespace: openshift-gitops
+spec:
+  clusterSets:
+    - sno-demo
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: app-role
+              operator: In
+              values:
+                - active
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: sno-app-placement-standby
+  namespace: openshift-gitops
+spec:
+  clusterSets:
+    - sno-demo
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: app-role
+              operator: NotIn
+              values:
+                - active

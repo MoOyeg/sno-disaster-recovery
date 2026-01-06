@@ -61,7 +61,7 @@
           - "  - Application workloads deployed by ArgoCD"
           - ""
           - "Cluster Labels:"
-          - "  - Remove cluster-type and app-role labels from all SNO clusters"
+          - "  - Remove app-role label from all SNO clusters (cluster-type will be preserved)"
           - "=========================================="
     
     - name: Confirm deletion
@@ -228,6 +228,62 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete VolSync automation policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - vs-source-hub-views
+        - vs-source-active
+        - vs-dest-active-del
+        - vs-source-standby-del
+        - vs-dest-standby
+      ignore_errors: true
+    
+    - name: Delete VolSync policy PlacementBindings
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - binding-vs-source-hub-views
+        - binding-vs-dest-active-del
+        - binding-vs-source-active
+        - binding-vs-source-standby-del
+        - binding-vs-dest-standby
+      ignore_errors: true
+    
+    - name: Delete VolSync policy Placements
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - sno-app-placement-hub
+        - sno-app-placement-active
+        - sno-app-placement-standby
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding for open-cluster-management-global-set
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Wait for Policies deletion
       kubernetes.core.k8s_info:
         api_version: policy.open-cluster-management.io/v1
@@ -310,7 +366,7 @@
       when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
       ignore_errors: true
     
-    - name: Remove cluster-type label from clusters
+    - name: Remove app-role label from clusters (keep cluster-type)
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1
         kind: ManagedCluster
@@ -319,7 +375,7 @@
         definition:
           metadata:
             labels:
-              cluster-type: null
+              app-role: null
       args: "{{ k8s_auth_params }}"
       loop: "{{ labeled_clusters.resources }}"
       when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
@@ -342,7 +398,7 @@
           - "  ✓ Namespace '{{ gitops_rbac_namespace }}' removed"
           - ""
           - "SNO Clusters:"
-          - "  ✓ Cluster labels (cluster-type, app-role) removed"
+          - "  ✓ app-role label removed (cluster-type preserved)"
           - "  ✓ ReplicationSource removed (if kubeconfig available)"
           - "  ✓ Application workloads cleaned up by ArgoCD"
           - ""

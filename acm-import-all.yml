@@ -1,0 +1,337 @@
+---
+- name: Import All SNO Clusters into ACM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+    
+    - name: Display ACM status
+      ansible.builtin.debug:
+        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+    
+    - name: Fail if ACM is not installed
+      ansible.builtin.fail:
+        msg: "ACM is not installed on hub cluster. Please install ACM first."
+      when: acm_check.resources | length == 0
+    
+    - name: Find all cluster kubeconfig files in credentials directory
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/credentials"
+        patterns: "kubeconfig"
+        recurse: yes
+        file_type: file
+      register: found_kubeconfigs
+    
+    - name: Build list of clusters to import
+      ansible.builtin.set_fact:
+        clusters_to_import: >-
+          {{
+            found_kubeconfigs.files |
+            map('dict2items') |
+            flatten |
+            selectattr('key', 'equalto', 'path') |
+            map(attribute='value') |
+            map('regex_replace', '^.*/credentials/([^/]+)/.*$', '\1') |
+            unique |
+            list
+          }}
+    
+    - name: Display clusters found
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Clusters Found for Import"
+          - "=========================================="
+          - "{{ clusters_to_import | to_nice_json }}"
+          - "=========================================="
+    
+    - name: Fail if no clusters found
+      ansible.builtin.fail:
+        msg: "No clusters found in credentials/ directory with kubeconfig files"
+      when: clusters_to_import | length == 0
+    
+    - name: Create or get ManagedClusterSet
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSet
+        name: sno-demo
+        state: present
+        definition:
+          metadata:
+            annotations:
+              description: "SNO clusters managed by this hub"
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Check if cluster kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/credentials/{{ item }}/auth/kubeconfig"
+      register: kubeconfig_checks
+      loop: "{{ clusters_to_import }}"
+    
+    - name: Read cluster kubeconfigs
+      ansible.builtin.slurp:
+        src: "{{ item.stat.path }}"
+      register: kubeconfig_contents
+      when: item.stat.exists
+      loop: "{{ kubeconfig_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create namespaces for managed clusters
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item.item }}"
+        state: present
+      args: "{{ k8s_auth_params }}"
+      when: item.stat.exists
+      loop: "{{ kubeconfig_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create auto-import secrets
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: auto-import-secret
+        namespace: "{{ item.item.item }}"
+        state: present
+        definition:
+          type: Opaque
+          stringData:
+            autoImportRetry: "5"
+            kubeconfig: "{{ item.content | b64decode }}"
+      args: "{{ k8s_auth_params }}"
+      when: item.item.stat.exists
+      loop: "{{ kubeconfig_contents.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+    
+    - name: Create ManagedCluster resources
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.item }}"
+        state: present
+        definition:
+          metadata:
+            labels:
+              name: "{{ item.item }}"
+              cluster-type: sno
+              cluster.open-cluster-management.io/clusterset: sno-demo
+              addons.open-cluster-management.io/volsync: "true"
+              addons.open-cluster-management.io/managed-serviceaccount: "true"
+          spec:
+            hubAcceptsClient: true
+            leaseDurationSeconds: 60
+      args: "{{ k8s_auth_params }}"
+      when: item.stat.exists
+      loop: "{{ kubeconfig_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create KlusterletAddonConfig for each cluster
+      kubernetes.core.k8s:
+        api_version: agent.open-cluster-management.io/v1
+        kind: KlusterletAddonConfig
+        name: "{{ item.item }}"
+        namespace: "{{ item.item }}"
+        state: present
+        definition:
+          spec:
+            applicationManager:
+              enabled: true
+            certPolicyController:
+              enabled: true
+            policyController:
+              enabled: true
+            searchCollector:
+              enabled: true
+      args: "{{ k8s_auth_params }}"
+      when: item.stat.exists
+      loop: "{{ kubeconfig_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Wait for all clusters to be accepted
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: managed_cluster
+      until:
+        - managed_cluster.resources | length > 0
+        - managed_cluster.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'HubAcceptedManagedCluster') | map(attribute='status') | first | default('False') == 'True'
+      retries: 30
+      delay: 10
+      failed_when: false
+      loop: "{{ clusters_to_import }}"
+    
+    - name: Create namespace for VolSync RBAC policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: volsync-rbac-policies
+        state: present
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create ManagedClusterSetBinding for volsync-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSet: sno-demo
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Placement for SNO clusters (for VolSync RBAC policy)
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-volsync-rbac-placement
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create Policy for VolSync anyuid SCC on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: AC Access Control
+              policy.open-cluster-management.io/controls: AC-6 Least Privilege
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: volsync-privileged-scc-binding
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: ClusterRole
+                          metadata:
+                            name: volsync-privileged-role
+                          rules:
+                            - apiGroups:
+                                - security.openshift.io
+                              resourceNames:
+                                - privileged
+                              resources:
+                                - securitycontextconstraints
+                              verbs:
+                                - use
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: ClusterRoleBinding
+                          metadata:
+                            name: volsync-privileged-binding
+                          roleRef:
+                            apiGroup: rbac.authorization.k8s.io
+                            kind: ClusterRole
+                            name: volsync-privileged-role
+                          subjects:
+                            - kind: ServiceAccount
+                              name: volsync
+                              namespace: openshift-operators
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create PlacementBinding for VolSync RBAC Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-privileged-scc-binding
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-volsync-rbac-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: volsync-privileged-scc
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Wait for VolSync RBAC Policy to be created
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_rbac_policy_status
+      until: volsync_rbac_policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+    
+    - name: Display final status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "ACM Cluster Import Completed"
+          - "=========================================="
+          - "Clusters imported into ManagedClusterSet: sno-demo"
+          - "Total clusters: {{ clusters_to_import | length }}"
+          - ""
+          - "VolSync RBAC Policy Deployed:"
+          - "- Policy: volsync-privileged-scc"
+          - "- Namespace: volsync-rbac-policies"
+          - "- Target: All SNO clusters in sno-demo"
+          - "- SCC: privileged (built-in OpenShift SCC with seccomp support)"
+          - "- ServiceAccount: volsync in openshift-operators"
+          - ""
+          - "Next Steps:"
+          - "1. Check cluster status:"
+          - "   oc get managedclusters"
+          - ""
+          - "2. View cluster details:"
+          - "   oc get managedcluster <cluster-name> -o yaml"
+          - ""
+          - "3. Check cluster set:"
+          - "   oc get managedclusterset sno-demo -o yaml"
+          - ""
+          - "4. Verify VolSync RBAC policy:"
+          - "   oc get policy volsync-privileged-scc -n volsync-rbac-policies"
+          - "=========================================="

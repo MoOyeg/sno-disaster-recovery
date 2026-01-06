@@ -8,7 +8,7 @@
     acm_namespace: "open-cluster-management"
     application_namespace: "quarkus-web-app"
     git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
-    git_repo_branch: "main"
+    git_repo_branch: "automated"
     git_repo_path: "app/openshift"
     argo_project: "default"
   
@@ -443,27 +443,6 @@
           - "Secret contains PSK for rsync-tls replication"
           - "=========================================="
     
-    - name: Create Placement for active SNO cluster
-      kubernetes.core.k8s:
-        api_version: cluster.open-cluster-management.io/v1beta1
-        kind: Placement
-        name: sno-app-placement-active
-        namespace: openshift-gitops
-        state: present
-        definition:
-          spec:
-            clusterSets:
-              - sno-demo
-            predicates:
-              - requiredClusterSelector:
-                  labelSelector:
-                    matchExpressions:
-                      - key: app-role
-                        operator: In
-                        values:
-                          - active
-      args: "{{ k8s_auth_params }}"
-    
     - name: Create Placement for SNO clusters
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
@@ -480,26 +459,6 @@
                   labelSelector:
                     matchLabels:
                       cluster-type: sno
-      args: "{{ k8s_auth_params }}"
-    
-    - name: Create Placement for standby SNO clusters
-      kubernetes.core.k8s:
-        api_version: cluster.open-cluster-management.io/v1beta1
-        kind: Placement
-        name: sno-app-placement-standby
-        namespace: openshift-gitops
-        state: present
-        definition:
-          spec:
-            clusterSets:
-              - sno-demo
-            predicates:
-              - requiredClusterSelector:
-                  labelSelector:
-                    matchExpressions:
-                      - key: name
-                        operator: In
-                        values: "{{ standby_cluster_list }}"
       args: "{{ k8s_auth_params }}"
     
     - name: Create ApplicationSet for Quarkus MySQL App
@@ -552,120 +511,64 @@
                       maxDuration: 3m
       args: "{{ k8s_auth_params }}"
     
-    - name: Create ApplicationSet for VolSync ReplicationDestination on Standby Clusters
+    - name: Create ManagedClusterSetBinding for open-cluster-management-global-set namespace
       kubernetes.core.k8s:
-        api_version: argoproj.io/v1alpha1
-        kind: ApplicationSet
-        name: volsync-replicationdestination-appset
-        namespace: openshift-gitops
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: open-cluster-management-global-set
         state: present
         definition:
           spec:
-            generators:
-              - clusterDecisionResource:
-                  configMapRef: acm-placement
-                  labelSelector:
-                    matchLabels:
-                      cluster.open-cluster-management.io/placement: "sno-app-placement-standby"
-                  requeueAfterSeconds: 180
-            template:
-              metadata:
-                annotations:
-                  apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
-                  apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
-                  argocd.argoproj.io/skip-reconcile: "true"
-                labels:
-                  apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
-                  velero.io/exclude-from-backup: 'true'
-                name: "volsync-replicationdestination-{{ '{{name}}' }}"
-              spec:
-                project: default
-                source:
-                  repoURL: "{{ git_repo_url }}"
-                  targetRevision: "{{ git_repo_branch }}"
-                  path: app/volsync/destination
-                destination:
-                  server: "{{ '{{server}}' }}"
-                  namespace: "{{ application_namespace }}"
-                syncPolicy:
-                  automated:
-                    prune: true
-                    selfHeal: true
-                  syncOptions:
-                    - CreateNamespace=true
-                    - PruneLast=true
-                  retry:
-                    limit: 5
-                    backoff:
-                      duration: 5s
-                      factor: 2
-                      maxDuration: 3m
+            clusterSet: sno-demo
       args: "{{ k8s_auth_params }}"
     
-    - name: Wait for ReplicationDestination to be ready on standby clusters
-      ansible.builtin.pause:
-        seconds: 30
-        prompt: "Waiting for ReplicationDestination to be created on standby clusters..."
-    
-    - name: Check if kubeconfig files exist for SNO clusters
-      ansible.builtin.stat:
-        path: "{{ playbook_dir }}/artifacts/{{ item }}/kubeconfig"
-      register: kubeconfig_files
-      loop: "{{ sno_cluster_list }}"
-    
-    - name: Get ReplicationDestination address from standby cluster
-      kubernetes.core.k8s_info:
-        api_version: volsync.backube/v1alpha1
-        kind: ReplicationDestination
-        name: mysql-replicationdestination
-        namespace: "{{ application_namespace }}"
-        kubeconfig: "{{ playbook_dir }}/artifacts/{{ item }}/kubeconfig"
-      register: replication_dest_info
-      loop: "{{ sno_cluster_list | difference([selected_cluster]) }}"
-      when: 
-        - kubeconfig_files.results | selectattr('item', 'equalto', item) | map(attribute='stat.exists') | first | default(false)
-      failed_when: false
-    
-    - name: Extract ReplicationDestination address
-      ansible.builtin.set_fact:
-        replication_dest_address: "{{ item.resources[0].status.rsyncTLS.address }}"
-      loop: "{{ replication_dest_info.results }}"
-      when:
-        - item.resources is defined
-        - item.resources | length > 0
-        - item.resources[0].status is defined
-        - item.resources[0].status.rsyncTLS is defined
-        - item.resources[0].status.rsyncTLS.address is defined
-      loop_control:
-        label: "{{ item.item | default('skipped') }}"
-    
-    - name: Display ReplicationDestination address
-      ansible.builtin.debug:
-        msg: "ReplicationDestination address found: {{ replication_dest_address }}"
-      when: replication_dest_address is defined
-    
-    - name: Create ReplicationSource on active cluster
+    - name: Apply VolSync Automation ACM Policies
       kubernetes.core.k8s:
-        api_version: volsync.backube/v1alpha1
-        kind: ReplicationSource
-        name: mysql-replicationsource
-        namespace: "{{ application_namespace }}"
-        kubeconfig: "{{ playbook_dir }}/artifacts/{{ selected_cluster }}/kubeconfig"
         state: present
-        definition:
-          spec:
-            sourcePVC: mysql-pvc
-            trigger:
-              schedule: "*/5 * * * *"
-            rsyncTLS:
-              keySecret: volsync-rsync-tls-mysql-replicationsource
-              address: "{{ replication_dest_address }}"
-              copyMethod: Snapshot
-              storageClassName: lvms-vg1
-              volumeSnapshotClassName: lvms-vg1
-      when:
-        - replication_dest_address is defined
-        - kubeconfig_files.results | selectattr('item', 'equalto', selected_cluster) | map(attribute='stat.exists') | first | default(false)
+        src: "{{ playbook_dir }}/acm-policy-volsync-automate.yaml"
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Wait for VolSync policies to be created
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+      args: "{{ k8s_auth_params }}"
+      register: policy_status
+      until: policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+      loop:
+        - vs-source-hub-views
+        - vs-source-active
+        - vs-dest-active-del
+        - vs-source-standby-del
+        - vs-dest-standby
+    
+    - name: Display VolSync automation policy status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "VolSync Automation ACM Policies Created"
+          - "=========================================="
+          - "Policies created in: open-cluster-management-global-set"
+          - ""
+          - "Active Cluster Policies:"
+          - "- volsync-replicationsource-active: Creates ReplicationSource with destination address"
+          - "- volsync-destination-active-delete: Removes ReplicationDestination from active"
+          - ""
+          - "Standby Cluster Policies:"
+          - "- volsync-destination-standby: Maintains ReplicationDestination"
+          - "- volsync-replicationsource-standby-delete: Removes ReplicationSource from standby"
+          - ""
+          - "The policies will automatically:"
+          - "1. Create ReplicationDestination on standby clusters"
+          - "2. Lookup destination address from standby clusters"
+          - "3. Create ReplicationSource on active cluster with discovered address"
+          - "4. Remove incorrect resources from each cluster type"
+          - "=========================================="
     
     - name: Wait for ApplicationSet to be created
       kubernetes.core.k8s_info:
@@ -676,18 +579,6 @@
       args: "{{ k8s_auth_params }}"
       register: appset_status
       until: appset_status.resources | length > 0
-      retries: 10
-      delay: 5
-    
-    - name: Wait for VolSync ApplicationSet to be created
-      kubernetes.core.k8s_info:
-        api_version: argoproj.io/v1alpha1
-        kind: ApplicationSet
-        name: volsync-replicationdestination-appset
-        namespace: openshift-gitops
-      args: "{{ k8s_auth_params }}"
-      register: volsync_appset_status
-      until: volsync_appset_status.resources | length > 0
       retries: 10
       delay: 5
     
@@ -710,7 +601,7 @@
           - "Application: quarkus-mysql-app"
           - "ApplicationSet: quarkus-mysql-appset"
           - "VolSync Destination ApplicationSet: volsync-replicationdestination-appset"
-          - "VolSync Source Policy: volsync-replicationsource (ACM Policy)"
+          - "VolSync Automation: ACM Policies (acm-policy-volsync-automate.yaml)"
           - "Namespace: openshift-gitops"
           - "Git Repository: {{ git_repo_url }}"
           - "Git Path (App): {{ git_repo_path }}"
@@ -737,8 +628,9 @@
           - "- Permissions: Full admin access in {{ application_namespace }}"
           - ""
           - "VolSync Configuration:"
-          - "- ReplicationDestination deployed on standby clusters (LoadBalancer)"
-          - "{{ '- ReplicationSource deployed on active cluster with address: ' + replication_dest_address if replication_dest_address is defined else '- ReplicationSource deployment: Waiting for ReplicationDestination address' }}"
+          - "- ReplicationDestination: Managed by ACM policy on standby clusters"
+          - "- ReplicationSource: Managed by ACM policy on active cluster"
+          - "- Address discovery: Automatic via ACM policy lookup"
           - "- Replication schedule: Every 5 minutes"
           - "- Ready for disaster recovery scenarios"
           - "=========================================="
@@ -757,7 +649,4 @@
           - "   oc get pods -n {{ application_namespace }}"
           - "   oc get route -n {{ application_namespace }}"
           - ""
-          - "5. Verify VolSync replication:"
-          - "   oc get replicationdestination -n {{ application_namespace }}"
-          - "   oc get replicationsource -n {{ application_namespace }}"
           - "=========================================="
