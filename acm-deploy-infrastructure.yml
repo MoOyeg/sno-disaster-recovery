@@ -1311,6 +1311,137 @@
           loop: "{{ all_metallb_ranges }}"
           when: item.ranges | default([]) | length > 0
 
+    - name: Create namespace for VolSync RBAC policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: volsync-rbac-policies
+        state: present
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create ManagedClusterSetBinding for volsync-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSet: sno-demo
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create Placement for SNO clusters (for VolSync RBAC policy)
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-volsync-rbac-placement
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create Policy for VolSync privileged SCC on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: AC Access Control
+              policy.open-cluster-management.io/controls: AC-6 Least Privilege
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: volsync-privileged-scc-binding
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: ClusterRole
+                          metadata:
+                            name: volsync-privileged-role
+                          rules:
+                            - apiGroups:
+                                - security.openshift.io
+                              resourceNames:
+                                - privileged
+                              resources:
+                                - securitycontextconstraints
+                              verbs:
+                                - use
+                      - complianceType: musthave
+                        objectDefinition:
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          kind: ClusterRoleBinding
+                          metadata:
+                            name: volsync-privileged-binding
+                          roleRef:
+                            apiGroup: rbac.authorization.k8s.io
+                            kind: ClusterRole
+                            name: volsync-privileged-role
+                          subjects:
+                            - kind: ServiceAccount
+                              name: volsync
+                              namespace: openshift-operators
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create PlacementBinding for VolSync RBAC Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-privileged-scc-binding
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-volsync-rbac-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: volsync-privileged-scc
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Wait for VolSync RBAC Policy to be created
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_rbac_policy_status
+      until: volsync_rbac_policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+      when: operator_policy_action == "present"
+
     - name: Display deployment status
       ansible.builtin.debug:
         msg:
@@ -1332,4 +1463,11 @@
           - "{{ 'MetalLB IP Ranges: ' + (metallb_ip_address_ranges | join(', ')) if metallb_ip_address_ranges | default([]) | length > 0 else 'MetalLB IP Ranges: Not configured' }}"
           - "{{ 'Secondary Disk: Enabled (' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_secondary_disk_device is defined and sno_secondary_disk_device != '' else 'Secondary Disk: Disabled' }}"
           - "{{ 'Submariner: ENABLED (subnets not shared)' if metallb_subnets_shared is defined and not metallb_subnets_shared else 'Submariner: Not required (shared subnet)' if metallb_subnets_shared is defined else '' }}"
+          - ""
+          - "VolSync RBAC Policy Deployed:"
+          - "  - Policy: volsync-privileged-scc"
+          - "  - Namespace: volsync-rbac-policies"
+          - "  - Target: All SNO clusters in sno-demo"
+          - "  - SCC: privileged"
+          - "  - ServiceAccount: volsync in openshift-operators"
           - "=========================================="

@@ -29,14 +29,84 @@ spec:
                 kind: ManagedClusterView
                 metadata:
                   name: volsync-dest-info-quarkus-web-app
-                  namespace: quarkus-web-app
+                  namespace: {{ $managedCluster.metadata.name }}
+                  labels:
+                    app: volsync
+                    volsync-role: destination-info
                 spec:
                   scope:
                     name: quarkus-mysql-volsync-destination-standby
                     namespace: quarkus-web-app
-                    resource: replicationdestinations
+                    kind: ReplicationDestination
                     apiGroup: volsync.backube
                     version: v1alpha1
+            {{- end }}
+            {{- end }}
+            {{- $mcvList := (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "" "").items }}
+            {{- range $mcv := $mcvList }}
+            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") }}
+            {{- $shouldDelete := true }}
+            {{- range $managedCluster := (lookup "cluster.open-cluster-management.io/v1" "ManagedCluster" "" "").items }}
+            {{- if and (ne (index $managedCluster.metadata.labels "name") "local-cluster") (ne (index $managedCluster.metadata.labels "app-role") "active") }}
+            {{- if eq $mcv.metadata.namespace $managedCluster.metadata.name }}
+            {{- $shouldDelete = false }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $shouldDelete }}
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: view.open-cluster-management.io/v1beta1
+                kind: ManagedClusterView
+                metadata:
+                  name: {{ $mcv.metadata.name }}
+                  namespace: {{ $mcv.metadata.namespace }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: vs-dest-info-hub
+  namespace: open-cluster-management-global-set
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: vs-dest-info-configmap
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{- $mcvList := (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "" "").items }}
+            {{- range $mcv := $mcvList }}
+            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") }}
+            {{- if $mcv.status.result }}
+            {{- $dest := $mcv.status.result }}
+            {{- if $dest.status.rsyncTLS.address }}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: volsync-dest-info-quarkus-web-app
+                  namespace: open-cluster-management-global-set
+                data:
+                  address: {{ $dest.status.rsyncTLS.address | quote }}
+                  keySecret: {{ $dest.spec.rsyncTLS.keySecret | quote }}
+                  storageClassName: {{ $dest.spec.rsyncTLS.storageClassName | default "" | quote }}
+                  volumeSnapshotClassName: {{ $dest.spec.rsyncTLS.volumeSnapshotClassName | default "" | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- end }}
 ---
@@ -57,37 +127,59 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
+          name: vs-dest-info-configmap-copy
+        spec:
+          remediationAction: enforce
+          severity: low
+          object-templates-raw: |
+            {{hub- $cm := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dest-info-quarkus-web-app") hub}}
+            {{hub- if $cm hub}}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: volsync-dest-info-quarkus-web-app
+                  namespace: quarkus-web-app
+                data:
+                  address: {{hub $cm.data.address | quote hub}}
+                  keySecret: {{hub $cm.data.keySecret | quote hub}}
+                  storageClassName: {{hub $cm.data.storageClassName | quote hub}}
+                  volumeSnapshotClassName: {{hub $cm.data.volumeSnapshotClassName | quote hub}}
+            {{hub- end hub}}
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
           name: vs-source-create-replicationsource
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{- range $mcv := "{{hub (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "quarkus-web-app" "").items }}" }}
-            {{- if $mcv.status.result }}
-            {{- $dest := $mcv.status.result }}
-            {{- if $dest.status.rsyncTLS.address }}
+            {{- $cm := (lookup "v1" "ConfigMap" "quarkus-web-app" "volsync-dest-info-quarkus-web-app") }}
+            {{- if and $cm $cm.data }}
+            {{- if $cm.data.address }}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: volsync.backube/v1alpha1
                 kind: ReplicationSource
                 metadata:
-                  name: {{ $dest.spec.rsyncTLS.destinationPVC }}-replicationsource
+                  name: volsync-source-info-quarkus-web-app
                   namespace: quarkus-web-app
                 spec:
-                  sourcePVC: {{ $dest.spec.rsyncTLS.destinationPVC }}
+                  sourcePVC: mysql-pvc
                   trigger:
                     schedule: "*/5 * * * *"
                   rsyncTLS:
-                    keySecret: {{ $dest.spec.rsyncTLS.keySecret }}
-                    address: {{ $dest.status.rsyncTLS.address | quote }}
+                    keySecret: {{ $cm.data.keySecret }}
+                    address: {{ $cm.data.address | quote }}
                     copyMethod: Snapshot
-                    {{- if $dest.spec.rsyncTLS.storageClassName }}
-                    storageClassName: {{ $dest.spec.rsyncTLS.storageClassName }}
+                    {{- if ne $cm.data.storageClassName "" }}
+                    storageClassName: {{ $cm.data.storageClassName }}
                     {{- end }}
-                    {{- if $dest.spec.rsyncTLS.volumeSnapshotClassName }}
-                    volumeSnapshotClassName: {{ $dest.spec.rsyncTLS.volumeSnapshotClassName }}
+                    {{- if ne $cm.data.volumeSnapshotClassName "" }}
+                    volumeSnapshotClassName: {{ $cm.data.volumeSnapshotClassName }}
                     {{- end }}
-            {{- end }}
             {{- end }}
             {{- end }}
 ---
@@ -206,6 +298,20 @@ placementRef:
   apiGroup: cluster.open-cluster-management.io
 subjects:
   - name: vs-source-hub-views
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-vs-dest-info-hub
+  namespace: open-cluster-management-global-set
+placementRef:
+  name: sno-app-placement-hub
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: vs-dest-info-hub
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---

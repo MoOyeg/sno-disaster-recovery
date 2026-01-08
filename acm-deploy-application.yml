@@ -150,7 +150,7 @@
               app-role: active
       args: "{{ k8s_auth_params }}"
     
-    - name: Label other SNO clusters with cluster-type=sno
+    - name: Label other SNO clusters with standby
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1
         kind: ManagedCluster
@@ -479,12 +479,12 @@
                   requeueAfterSeconds: 180
             template:
               metadata:
-                annotations:
-                  apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
-                  apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
-                  argocd.argoproj.io/skip-reconcile: "true"
+                annotations: {}
+                  #apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
+                  #apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
+                  #argocd.argoproj.io/skip-reconcile: "true"
                 labels:
-                  apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  #apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
                   velero.io/exclude-from-backup: 'true'
                 name: "quarkus-web-app-{{ '{{name}}' }}"
               spec:
@@ -493,6 +493,56 @@
                   - repoURL: "{{ git_repo_url }}"
                     targetRevision: "{{ git_repo_branch }}"
                     path: "{{ git_repo_path }}"
+                destination:
+                  server: "{{ '{{server}}' }}"
+                  namespace: "{{ application_namespace }}"
+                syncPolicy:
+                  automated:
+                    prune: true
+                    selfHeal: true
+                  syncOptions:
+                    - CreateNamespace=true
+                    - PruneLast=true
+                  retry:
+                    limit: 5
+                    backoff:
+                      duration: 5s
+                      factor: 2
+                      maxDuration: 3m
+      args: "{{ k8s_auth_params }}"
+    
+    - name: Create ApplicationSet for Quarkus MySQL PVC
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-pvc-appset
+        namespace: openshift-gitops
+        state: present
+        definition:
+          spec:
+            generators:
+              - clusterDecisionResource:
+                  configMapRef: acm-placement
+                  labelSelector:
+                    matchLabels:
+                      cluster.open-cluster-management.io/placement: "sno-app-placement"
+                  requeueAfterSeconds: 180
+            template:
+              metadata:
+                annotations: {}
+                  #apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
+                  #apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
+                  #argocd.argoproj.io/skip-reconcile: "true"
+                labels:
+                  #apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  velero.io/exclude-from-backup: 'true'
+                name: "quarkus-mysql-pvc-{{ '{{name}}' }}"
+              spec:
+                project: default
+                sources:
+                  - repoURL: "{{ git_repo_url }}"
+                    targetRevision: "{{ git_repo_branch }}"
+                    path: "app/pvc"
                 destination:
                   server: "{{ '{{server}}' }}"
                   namespace: "{{ application_namespace }}"
@@ -542,6 +592,7 @@
       delay: 5
       loop:
         - vs-source-hub-views
+        - vs-dest-info-hub
         - vs-source-active
         - vs-dest-active-del
         - vs-source-standby-del

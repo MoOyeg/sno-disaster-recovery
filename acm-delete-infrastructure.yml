@@ -44,6 +44,7 @@
         - "{{ gitops_hub_namespace }}"
         - "{{ sno_policies_namespace }}"
         - "{{ sno_operator_policies_namespace }}"
+        - volsync-rbac-policies
       ignore_errors: true
     
     - name: Display deletion plan
@@ -76,10 +77,16 @@
           - "  - ManagedClusterSetBindings in openshift-gitops"
           - "  - Placements for GitOps integration"
           - ""
+          - "VolSync RBAC Policies:"
+          - "  - volsync-privileged-scc policy"
+          - "  - Placement and PlacementBinding"
+          - "  - ManagedClusterSetBinding in volsync-rbac-policies"
+          - ""
           - "Namespaces:"
           - "  - {{ gitops_hub_namespace }}"
           - "  - {{ sno_policies_namespace }}"
           - "  - {{ sno_operator_policies_namespace }}"
+          - "  - volsync-rbac-policies"
           - ""
           - "WARNING: This will NOT uninstall the operators from clusters."
           - "It only removes the ACM policies that manage them."
@@ -182,6 +189,57 @@
       args: "{{ k8s_auth_params }}"
       loop: "{{ hub_policies.resources }}"
       when: hub_policies.resources is defined and hub_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get all policies in VolSync RBAC namespace
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: volsync-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_policies
+      ignore_errors: true
+    
+    - name: Delete all VolSync RBAC policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item.metadata.name }}"
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ volsync_policies.resources }}"
+      when: volsync_policies.resources is defined and volsync_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC PlacementBinding
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-privileged-scc-binding
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC Placement
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-volsync-rbac-placement
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC ManagedClusterSetBinding
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
     - name: Get all GitOpsCluster resources
@@ -321,6 +379,15 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete VolSync RBAC policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Wait for namespaces to be deleted
       kubernetes.core.k8s_info:
         api_version: v1
@@ -335,6 +402,7 @@
         - "{{ gitops_hub_namespace }}"
         - "{{ sno_policies_namespace }}"
         - "{{ sno_operator_policies_namespace }}"
+        - volsync-rbac-policies
       ignore_errors: true
     
     - name: Display deletion summary
@@ -347,7 +415,8 @@
           - "  - All ACM policies for infrastructure operators"
           - "  - PolicySet: sno-infrastructure-policyset"
           - "  - ManagedClusterSetBindings in policy namespaces"
-          - "  - Namespaces: {{ gitops_hub_namespace }}, {{ sno_policies_namespace }}, {{ sno_operator_policies_namespace }}"
+          - "  - VolSync RBAC policies (volsync-privileged-scc)"
+          - "  - Namespaces: {{ gitops_hub_namespace }}, {{ sno_policies_namespace }}, {{ sno_operator_policies_namespace }}, volsync-rbac-policies"
           - ""
           - "IMPORTANT NOTES:"
           - "1. Operators are still installed on the clusters"
