@@ -26,12 +26,12 @@
     
     - name: Display ACM status
       ansible.builtin.debug:
-        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+        msg: "ACM {{ 'is installed' if acm_check.resources is defined and acm_check.resources | length > 0 else 'is NOT installed' }}"
     
     - name: Fail if ACM is not installed
       ansible.builtin.fail:
         msg: "ACM is not installed. There are no policies to delete."
-      when: acm_check.resources | length == 0
+      when: acm_check.resources is not defined or acm_check.resources | length == 0
     
     - name: Check if policy namespaces exist
       kubernetes.core.k8s_info:

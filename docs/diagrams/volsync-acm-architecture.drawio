@@ -1,0 +1,156 @@
+<mxfile host="app.diagrams.net" modified="2026-01-08T00:00:00.000Z" agent="5.0" version="22.1.0" etag="draw.io" type="device">
+  <diagram name="VolSync ACM Architecture" id="arch">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- ACM Hub Cluster -->
+        <mxCell id="hub-container" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="300" y="40" width="600" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="hub-title" value="&lt;b&gt;ACM Hub Cluster&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="520" y="50" width="160" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- ACM Policies Box -->
+        <mxCell id="policies-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="340" y="90" width="520" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="policies-title" value="&lt;b&gt;ACM Policies (6 policies)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="360" y="100" width="180" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- Policy Items -->
+        <mxCell id="policy1" value="vs-source-hub-views" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="130" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="policy2" value="vs-dest-info-hub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="520" y="130" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="policy3" value="vs-source-active" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="680" y="130" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="policy4" value="vs-dest-standby" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="170" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="policy5" value="vs-dest-active-del" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="520" y="170" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="policy6" value="vs-source-standby-del" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="680" y="170" width="140" height="30" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="configmap" value="ConfigMap&#xa;(destination info)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="360" y="215" width="140" height="35" as="geometry" />
+        </mxCell>
+        
+        <!-- Active Cluster Container -->
+        <mxCell id="active-container" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="80" y="360" width="460" height="480" as="geometry" />
+        </mxCell>
+        <mxCell id="active-title" value="&lt;b&gt;Active Cluster (SNO-1)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="230" y="370" width="160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="active-label" value="Label: app-role=active" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="230" y="395" width="160" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- Quarkus Application -->
+        <mxCell id="quarkus-active" value="&lt;b&gt;Quarkus Application&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="430" width="380" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- MySQL PVC -->
+        <mxCell id="mysql-pvc-active" value="&lt;b&gt;MySQL PVC&lt;/b&gt;&#xa;(1Gi, lvms-vg1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="120" y="510" width="380" height="60" as="geometry" />
+        </mxCell>
+        
+        <!-- ReplicationSource -->
+        <mxCell id="replication-source" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="120" y="600" width="380" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="rep-source-title" value="&lt;b&gt;ReplicationSource&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="140" y="610" width="150" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="rep-source-details" value="• sourcePVC: mysql-pvc&#xa;• schedule: */5 * * * *&#xa;• copyMethod: Snapshot&#xa;• rsyncTLS:&#xa;  - address: [from ConfigMap]&#xa;  - keySecret: [from ConfigMap]&#xa;  - storageClassName: lvms-vg1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Courier New;" vertex="1" parent="1">
+          <mxGeometry x="140" y="640" width="340" height="150" as="geometry" />
+        </mxCell>
+        
+        <!-- Standby Cluster Container -->
+        <mxCell id="standby-container" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="660" y="360" width="460" height="480" as="geometry" />
+        </mxCell>
+        <mxCell id="standby-title" value="&lt;b&gt;Standby Cluster (SNO-2)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="810" y="370" width="160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="standby-label" value="Label: app-role!=active" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="810" y="395" width="160" height="20" as="geometry" />
+        </mxCell>
+        
+        <!-- No Application -->
+        <mxCell id="no-app-standby" value="(No Application)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="700" y="430" width="380" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- MySQL PVC Standby -->
+        <mxCell id="mysql-pvc-standby" value="&lt;b&gt;MySQL PVC&lt;/b&gt;&#xa;(1Gi, lvms-vg1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="700" y="510" width="380" height="60" as="geometry" />
+        </mxCell>
+        
+        <!-- ReplicationDestination -->
+        <mxCell id="replication-dest" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="700" y="600" width="380" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="rep-dest-title" value="&lt;b&gt;ReplicationDestination&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="720" y="610" width="180" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="rep-dest-details" value="• destPVC: mysql-pvc&#xa;• trigger:&#xa;  schedule: */2 * * * *&#xa;• rsyncTLS:&#xa;  - serviceType: LoadBalancer&#xa;  - keySecret: volsync-rsync-tls-dst&#xa;  - storageClassName: lvms-vg1&#xa;• capacity: 1Gi" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontFamily=Courier New;" vertex="1" parent="1">
+          <mxGeometry x="720" y="640" width="340" height="150" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrows from Hub to Clusters -->
+        <mxCell id="arrow-hub-active" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#b85450;" edge="1" parent="1" source="policies-box" target="active-container">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="450" y="300" as="sourcePoint" />
+            <mxPoint x="500" y="250" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-hub-standby" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#d6b656;" edge="1" parent="1" source="policies-box" target="standby-container">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="650" y="300" as="sourcePoint" />
+            <mxPoint x="700" y="250" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Replication Arrow -->
+        <mxCell id="replication-arrow" value="VolSync Data Replication&#xa;(rsync-tls over LoadBalancer)" style="endArrow=classic;html=1;rounded=0;strokeWidth=3;strokeColor=#9673a6;fontSize=12;fontStyle=1" edge="1" parent="1" source="replication-source" target="replication-dest">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="520" y="700" as="sourcePoint" />
+            <mxPoint x="680" y="700" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Connection arrows -->
+        <mxCell id="arrow-app-pvc" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=1;" edge="1" parent="1" source="quarkus-active" target="mysql-pvc-active">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="310" y="490" as="sourcePoint" />
+            <mxPoint x="360" y="440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pvc-source" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=1;" edge="1" parent="1" source="mysql-pvc-active" target="replication-source">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="310" y="580" as="sourcePoint" />
+            <mxPoint x="360" y="530" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-dest-pvc" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=1;endFill=1;startArrow=none;" edge="1" parent="1" source="replication-dest" target="mysql-pvc-standby">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="890" y="580" as="sourcePoint" />
+            <mxPoint x="940" y="530" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

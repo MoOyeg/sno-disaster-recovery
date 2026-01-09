@@ -25,7 +25,7 @@
         recurse: yes
         file_type: file
       register: found_kubeconfigs
-      when: acm_check.resources | length > 0
+      when: acm_check.resources is defined and acm_check.resources | length > 0
     
     - name: Build list of clusters to import
       ansible.builtin.set_fact:
@@ -40,7 +40,7 @@
             unique |
             list
           }}
-      when: acm_check.resources | length > 0 and found_kubeconfigs.files is defined
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and found_kubeconfigs.files is defined
     
     - name: Check for existing ManagedCluster resources
       kubernetes.core.k8s_info:
@@ -50,7 +50,7 @@
       args: "{{ k8s_auth_params }}"
       register: existing_clusters
       loop: "{{ clusters_to_import | default([]) }}"
-      when: acm_check.resources | length > 0
+      when: acm_check.resources is defined and acm_check.resources | length > 0
     
     - name: Build list of clusters needing import
       ansible.builtin.set_fact:
@@ -62,7 +62,7 @@
             map(attribute='item') |
             list
           }}
-      when: acm_check.resources | length > 0 and existing_clusters.results is defined
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and existing_clusters.results is defined
     
     - name: Display import status
       ansible.builtin.debug:
@@ -71,20 +71,20 @@
           - "Clusters already imported: {{ (clusters_to_import | default([]) | length) - (clusters_needing_import | default([]) | length) }}"
           - "Clusters needing import: {{ clusters_needing_import | default([]) | length }}"
           - "{{ clusters_needing_import | default([]) }}"
-      when: acm_check.resources | length > 0
+      when: acm_check.resources is defined and acm_check.resources | length > 0
     
     - name: Check if cluster kubeconfig exists
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/credentials/{{ item }}/auth/kubeconfig"
       register: kubeconfig_checks
       loop: "{{ clusters_needing_import | default([]) }}"
-      when: acm_check.resources | length > 0
+      when: acm_check.resources is defined and acm_check.resources | length > 0
     
     - name: Read cluster kubeconfigs
       ansible.builtin.slurp:
         src: "{{ item.stat.path }}"
       register: kubeconfig_contents
-      when: acm_check.resources | length > 0 and item.stat.exists
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
       loop: "{{ kubeconfig_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -96,7 +96,7 @@
         name: "{{ item.item }}"
         state: present
       args: "{{ k8s_auth_params }}"
-      when: acm_check.resources | length > 0 and item.stat.exists
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
       loop: "{{ kubeconfig_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -114,7 +114,7 @@
             autoImportRetry: "5"
             kubeconfig: "{{ item.content | b64decode }}"
       args: "{{ k8s_auth_params }}"
-      when: acm_check.resources | length > 0 and item.item.stat.exists
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.item.stat.exists
       loop: "{{ kubeconfig_contents.results | default([]) }}"
       loop_control:
         label: "{{ item.item.item }}"
@@ -137,7 +137,7 @@
             hubAcceptsClient: true
             leaseDurationSeconds: 60
       args: "{{ k8s_auth_params }}"
-      when: acm_check.resources | length > 0 and item.stat.exists
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
       loop: "{{ kubeconfig_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -164,11 +164,11 @@
 
     - name: Display ACM status
       ansible.builtin.debug:
-        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+        msg: "ACM {{ 'is installed' if acm_check.resources is defined and acm_check.resources | length > 0 else 'is NOT installed' }}"
 
     - name: Skip deployment if ACM is not installed
       ansible.builtin.meta: end_host
-      when: acm_check.resources | length == 0
+      when: acm_check.resources is not defined or acm_check.resources | length == 0
 
     - name: Check if OpenShift GitOps operator is installed on hub cluster
       kubernetes.core.k8s_info:
@@ -1380,33 +1380,18 @@
                     object-templates:
                       - complianceType: musthave
                         objectDefinition:
-                          apiVersion: rbac.authorization.k8s.io/v1
-                          kind: ClusterRole
-                          metadata:
-                            name: volsync-privileged-role
-                          rules:
-                            - apiGroups:
-                                - security.openshift.io
-                              resourceNames:
-                                - privileged
-                              resources:
-                                - securitycontextconstraints
-                              verbs:
-                                - use
-                      - complianceType: musthave
-                        objectDefinition:
-                          apiVersion: rbac.authorization.k8s.io/v1
                           kind: ClusterRoleBinding
+                          apiVersion: rbac.authorization.k8s.io/v1
                           metadata:
-                            name: volsync-privileged-binding
-                          roleRef:
-                            apiGroup: rbac.authorization.k8s.io
-                            kind: ClusterRole
-                            name: volsync-privileged-role
+                            name: 'system:openshift:scc:anyuid-volsync'
                           subjects:
                             - kind: ServiceAccount
                               name: volsync
-                              namespace: openshift-operators
+                              namespace: volsync-system
+                          roleRef:
+                            apiGroup: rbac.authorization.k8s.io
+                            kind: ClusterRole
+                            name: 'system:openshift:scc:anyuid'
       args: "{{ k8s_auth_params }}"
       when: operator_policy_action == "present"
     

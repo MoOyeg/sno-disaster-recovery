@@ -162,6 +162,19 @@ curl -X PUT https://<route-url>/tasks/1 \
 curl -X DELETE https://<route-url>/tasks/1
 ```
 
+### Verify database directly
+
+```bash
+# Show all tables
+oc exec -it deployment/mysql -- mysql -uquarkus -pquarkus quarkusdb -e "SHOW TABLES;"
+
+# Describe Task table structure
+oc exec -it deployment/mysql -- mysql -uquarkus -pquarkus quarkusdb -e "DESCRIBE Task;"
+
+# View all tasks in database
+oc exec -it deployment/mysql -- mysql -uquarkus -pquarkus quarkusdb -e "SELECT * FROM Task;"
+```
+
 ## Health Checks
 
 - Liveness: http://localhost:8080/q/health/live
