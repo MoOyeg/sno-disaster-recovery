@@ -87,12 +87,14 @@ spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
+            {{- $dr := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dr-config").data }}
+            {{- $submariner := and $dr (eq ($dr.submarinerEnabled | default "false") "true") }}
             {{- $mcvList := (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "" "").items }}
             {{- range $mcv := $mcvList }}
             {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") }}
             {{- if $mcv.status.result }}
             {{- $dest := $mcv.status.result }}
-            {{- if $dest.status.rsyncTLS.address }}
+            {{- if or $submariner $dest.status.rsyncTLS.address }}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: v1
@@ -101,7 +103,10 @@ spec:
                   name: volsync-dest-info-quarkus-web-app
                   namespace: open-cluster-management-global-set
                 data:
-                  address: {{ $dest.status.rsyncTLS.address | quote }}
+                  # Under Submariner the destination is reached at its exported
+                  # clusterset.local address; otherwise the LoadBalancer address
+                  # published in the ReplicationDestination status is used.
+                  address: {{ if $submariner }}{{ $dr.address | quote }}{{ else }}{{ $dest.status.rsyncTLS.address | quote }}{{ end }}
                   keySecret: {{ $dest.spec.rsyncTLS.keySecret | quote }}
                   storageClassName: {{ $dest.spec.rsyncTLS.storageClassName | default "" | quote }}
                   volumeSnapshotClassName: {{ $dest.spec.rsyncTLS.volumeSnapshotClassName | default "" | quote }}
@@ -268,7 +273,10 @@ spec:
         spec:
           remediationAction: enforce
           severity: low
-          object-templates:
+          # serviceType + storage classes come from the hub volsync-dr-config
+          # ConfigMap (written by deployapp). Under Submariner: ClusterIP (the
+          # service is exported across the clusterset); otherwise LoadBalancer.
+          object-templates-raw: |
             - complianceType: musthave
               objectDefinition:
                 apiVersion: volsync.backube/v1alpha1
@@ -280,12 +288,12 @@ spec:
                   trigger:
                     schedule: "*/2 * * * *"
                   rsyncTLS:
-                    serviceType: LoadBalancer
+                    serviceType: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "serviceType" hub}}'
                     copyMethod: Snapshot
                     destinationPVC: mysql-pvc
-                    storageClassName: lvms-vg1
+                    storageClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "storageClassName" hub}}'
                     keySecret: volsync-rsync-tls-mysql-replicationsource
-                    volumeSnapshotClassName: lvms-vg1
+                    volumeSnapshotClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "volumeSnapshotClassName" hub}}'
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
