@@ -243,6 +243,20 @@ spec:
           severity: low
           object-templates-raw: |
             {{- range $volsyncsrc := (lookup "volsync.backube/v1alpha1" "ReplicationSource" "" "").items }}
+            {{- /* Do not delete a source while VolSync is mid-transfer; a
+                   Synchronizing=True / SyncInProgress condition means an rsync
+                   is in flight and tearing it down could corrupt the standby
+                   snapshot. The policy re-evaluates on its interval, so the
+                   source is removed on a later pass once the sync completes. */}}
+            {{- $syncing := false }}
+            {{- if $volsyncsrc.status }}
+            {{- range $cond := ($volsyncsrc.status.conditions | default list) }}
+            {{- if and (eq $cond.type "Synchronizing") (eq $cond.status "True") }}
+            {{- $syncing = true }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if not $syncing }}
             - complianceType: mustnothave
               objectDefinition:
                 apiVersion: volsync.backube/v1alpha1
@@ -250,6 +264,7 @@ spec:
                 metadata:
                   name: {{ $volsyncsrc.metadata.name }}
                   namespace: {{ $volsyncsrc.metadata.namespace }}
+            {{- end }}
             {{- end }}
 ---
 apiVersion: policy.open-cluster-management.io/v1
