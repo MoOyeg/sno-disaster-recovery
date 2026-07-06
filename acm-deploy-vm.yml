@@ -1,56 +1,68 @@
 ---
-- name: Deploy Quarkus MySQL Application via ACM and ArgoCD
+# Deploy a DR demo VirtualMachine via ACM and ArgoCD.
+#
+# VM analogue of acm-deploy-application.yml (deployapp). Same active/standby DR
+# model, but the workload is a Fedora VM (OpenShift Virtualization) whose
+# persistent data disk (vm-data-pvc) is replicated by VolSync:
+#
+#   * The VM (vm/openshift) is scheduled to the ACTIVE cluster only.
+#   * The data disk PVC (vm/pvc) is deployed to EVERY SNO cluster.
+#   * VolSync source/destination lifecycle is driven by acm-policy-volsync-vm.yaml.
+#
+# Run:  ./ansible-runner.sh deployvm
+#       ./ansible-runner.sh deployvm -e selected_cluster=sno-cluster-01   (non-interactive)
+#
+# Prerequisites: OpenShift Virtualization (CNV) must be installed on the target
+# SNO clusters, and they must be imported into ACM (acmimport) with the operator
+# stack deployed (operators). This is an ALTERNATIVE to deployapp - do not run
+# both DR stacks at the same time.
+- name: Deploy DR demo VirtualMachine via ACM and ArgoCD
   hosts: localhost
   connection: local
   gather_facts: false
-  
+
   vars:
-    acm_namespace: "open-cluster-management"
-    application_namespace: "quarkus-web-app"
+    vm_namespace: "vm-dr-demo"
+    policy_namespace: "vm-dr-policies"
     git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
     git_repo_branch: "automated"
-    git_repo_path: "app/openshift"
-    argo_project: "default"
-    # VolSync ReplicationDestination (standby) and the rsync-tls Service that
-    # VolSync creates for it. The Service is exported across the Submariner link
-    # so the active cluster's ReplicationSource can reach it over the clusterset.
-    volsync_destination_rd_name: "quarkus-mysql-volsync-destination-standby"
-    volsync_destination_service: "volsync-rsync-tls-dst-{{ volsync_destination_rd_name }}"
-  
+    vm_git_path: "vm/openshift"
+    pvc_git_path: "vm/pvc"
+    volsync_key_secret: "volsync-rsync-tls-vm-data-pvc"
+    # VolSync ReplicationDestination (standby) and the rsync-tls Service VolSync
+    # creates for it; the Service is exported over Submariner so the active
+    # cluster's ReplicationSource can reach it via the clusterset address.
+    volsync_destination_rd_name: "vm-data-volsync-destination-standby"
+    volsync_destination_service: "volsync-rsync-tls-dst-vm-data-volsync-destination-standby"
+
   tasks:
     - name: Setup authentication parameters for hub cluster
       ansible.builtin.include_role:
         name: sno_prerequisites
         tasks_from: auth_check
-    
+
     - name: Get all managed clusters
       kubernetes.core.k8s_info:
         api_version: cluster.open-cluster-management.io/v1
         kind: ManagedCluster
       args: "{{ k8s_auth_params }}"
       register: managed_clusters
-    
+
     - name: Filter SNO clusters (exclude hub)
       ansible.builtin.set_fact:
         sno_cluster_list: "{{ managed_clusters.resources | selectattr('metadata.name', '!=', 'local-cluster') | map(attribute='metadata.name') | list }}"
-    
-    - name: Display available SNO clusters
-      ansible.builtin.debug:
-        msg:
-          - "Available SNO clusters:"
-          - "{{ sno_cluster_list | to_nice_json }}"
-    
+
     - name: Fail if no SNO clusters found
       ansible.builtin.fail:
-        msg: "No SNO clusters found. Please deploy SNO clusters first using './ansible-runner.sh deploy' (OpenShift Virtualization) or 'ansible-playbook -i inventory/hosts deploy-sno-aws.yml' (AWS), then import them with './ansible-runner.sh acmimport'."
+        msg: "No SNO clusters found. Deploy and import SNO clusters first (deploy / aws-deploy, then acmimport)."
       when: sno_cluster_list | length == 0
-    
-    - name: Prompt for application source cluster
+
+    - name: Prompt for VM source (active) cluster
       ansible.builtin.pause:
         prompt: |
 
           ==========================================
-          SELECT APPLICATION SOURCE CLUSTER
+          SELECT VM SOURCE (ACTIVE) CLUSTER
           ==========================================
 
           Available SNO clusters:
@@ -58,7 +70,7 @@
           {{ loop.index }}. {{ cluster }}
           {% endfor %}
 
-          Which cluster should be the application source (primary)?
+          Which cluster should run the VM (active/primary)?
           Enter cluster name or number [1-{{ sno_cluster_list | length }}]
       register: cluster_selection
       when: selected_cluster is not defined
@@ -66,25 +78,21 @@
     - name: Parse cluster selection
       ansible.builtin.set_fact:
         selected_cluster: "{{ sno_cluster_list[cluster_selection.user_input | int - 1] if cluster_selection.user_input | int > 0 and cluster_selection.user_input | int <= sno_cluster_list | length else cluster_selection.user_input }}"
-      when:
-        - selected_cluster is not defined
-        - cluster_selection.user_input is defined
-    
+      when: selected_cluster is not defined and cluster_selection.user_input is defined
+
     - name: Validate cluster selection
       ansible.builtin.fail:
-        msg: "Invalid cluster selection: {{ cluster_selection.user_input }}. Please select from: {{ sno_cluster_list | join(', ') }}"
+        msg: "Invalid cluster selection: {{ selected_cluster | default('(none)') }}. Select from: {{ sno_cluster_list | join(', ') }}"
       when: selected_cluster not in sno_cluster_list
-    
+
     - name: Display selected cluster
       ansible.builtin.debug:
         msg:
           - "=========================================="
-          - "Application source cluster: {{ selected_cluster }}"
-          - "Application will be deployed to all SNO clusters"
-          - "Source cluster will have read-write access"
-          - "Other clusters will replicate the application"
+          - "VM active cluster: {{ selected_cluster }}"
+          - "Data disk vm-data-pvc replicated to: {{ sno_cluster_list | difference([selected_cluster]) | join(', ') }}"
           - "=========================================="
-    
+
     - name: Verify ArgoCD is available on hub cluster
       kubernetes.core.k8s_info:
         api_version: argoproj.io/v1alpha1
@@ -93,32 +101,26 @@
       args: "{{ k8s_auth_params }}"
       register: argocd_check
       failed_when: false
-    
-    - name: Display ArgoCD status
-      ansible.builtin.debug:
-        msg: "ArgoCD instances found: {{ argocd_check.resources | length }}"
-      when: argocd_check.resources is defined
-    
+
     - name: Fail if ArgoCD is not installed
       ansible.builtin.fail:
-        msg: "OpenShift GitOps (ArgoCD) is not installed on hub cluster. Run './ansible-runner.sh operators' first to install it."
+        msg: "OpenShift GitOps (ArgoCD) is not installed on hub cluster. Run './ansible-runner.sh operators' first."
       when: argocd_check.resources | length == 0
 
-    
-    - name: Create namespace for application namespace
+    - name: Create VM application namespace on hub
       kubernetes.core.k8s:
         api_version: v1
         kind: Namespace
-        name: "{{ application_namespace }}"
+        name: "{{ vm_namespace }}"
         state: present
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create Role to read PlacementDecisions in application namespace
+
+    - name: Create Role to read PlacementDecisions in VM namespace
       kubernetes.core.k8s:
         api_version: rbac.authorization.k8s.io/v1
         kind: Role
         name: gitops-placement-reader
-        namespace: "{{ application_namespace }}"
+        namespace: "{{ vm_namespace }}"
         state: present
         definition:
           rules:
@@ -126,13 +128,13 @@
               resources: ["placementdecisions"]
               verbs: ["get", "list", "watch"]
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Create RoleBinding for GitOps service account
       kubernetes.core.k8s:
         api_version: rbac.authorization.k8s.io/v1
         kind: RoleBinding
         name: gitops-placement-reader
-        namespace: "{{ application_namespace }}"
+        namespace: "{{ vm_namespace }}"
         state: present
         definition:
           roleRef:
@@ -144,7 +146,7 @@
               name: openshift-gitops-argocd-application-controller
               namespace: openshift-gitops
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Label selected cluster as active
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1
@@ -157,8 +159,8 @@
               cluster-type: sno
               app-role: active
       args: "{{ k8s_auth_params }}"
-    
-    - name: Label other SNO clusters with standby
+
+    - name: Label other SNO clusters as standby
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1
         kind: ManagedCluster
@@ -172,43 +174,39 @@
       args: "{{ k8s_auth_params }}"
       loop: "{{ sno_cluster_list }}"
       when: item != selected_cluster
-    
-    - name: Set standby cluster list
-      ansible.builtin.set_fact:
-        standby_cluster_list: "{{ sno_cluster_list | difference([selected_cluster]) }}"
-    
+
     - name: Generate VolSync rsync-tls secret value
       ansible.builtin.shell:
         cmd: echo "volsync:$(openssl rand -hex 32)"
       register: volsync_secret_key
       changed_when: false
-    
-    - name: Create namespace for GitOps RBAC policies
+
+    - name: Create policy namespace for VM DR
       kubernetes.core.k8s:
         api_version: v1
         kind: Namespace
-        name: gitops-rbac-policies
+        name: "{{ policy_namespace }}"
         state: present
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create ManagedClusterSetBinding for gitops-rbac-policies namespace
+
+    - name: Create ManagedClusterSetBinding for the VM policy namespace
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta2
         kind: ManagedClusterSetBinding
         name: sno-demo
-        namespace: gitops-rbac-policies
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           spec:
             clusterSet: sno-demo
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create Placement for SNO clusters (for RBAC policy)
+
+    - name: Create Placement for all SNO clusters (RBAC + secret policies)
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
         kind: Placement
-        name: sno-gitops-rbac-placement
-        namespace: gitops-rbac-policies
+        name: vm-rbac-placement
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           spec:
@@ -220,13 +218,13 @@
                     matchLabels:
                       cluster-type: sno
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Create Policy for GitOps RBAC on SNO clusters
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: Policy
-        name: gitops-app-namespace-rbac
-        namespace: gitops-rbac-policies
+        name: vm-gitops-namespace-rbac
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           metadata:
@@ -242,7 +240,7 @@
                   apiVersion: policy.open-cluster-management.io/v1
                   kind: ConfigurationPolicy
                   metadata:
-                    name: gitops-app-namespace
+                    name: vm-gitops-namespace
                   spec:
                     remediationAction: enforce
                     severity: high
@@ -252,34 +250,12 @@
                           apiVersion: v1
                           kind: Namespace
                           metadata:
-                            name: "{{ application_namespace }}"
+                            name: "{{ vm_namespace }}"
               - objectDefinition:
                   apiVersion: policy.open-cluster-management.io/v1
                   kind: ConfigurationPolicy
                   metadata:
-                    name: gitops-serviceaccount
-                  spec:
-                    remediationAction: enforce
-                    severity: high
-                    object-templates:
-                      - complianceType: musthave
-                        objectDefinition:
-                          apiVersion: v1
-                          kind: Namespace
-                          metadata:
-                            name: openshift-gitops
-                      - complianceType: musthave
-                        objectDefinition:
-                          apiVersion: v1
-                          kind: ServiceAccount
-                          metadata:
-                            name: openshift-gitops-argocd-application-controller
-                            namespace: openshift-gitops
-              - objectDefinition:
-                  apiVersion: policy.open-cluster-management.io/v1
-                  kind: ConfigurationPolicy
-                  metadata:
-                    name: gitops-app-namespace-admin-role
+                    name: vm-gitops-admin-role
                   spec:
                     remediationAction: enforce
                     severity: high
@@ -290,7 +266,7 @@
                           kind: Role
                           metadata:
                             name: gitops-app-admin
-                            namespace: "{{ application_namespace }}"
+                            namespace: "{{ vm_namespace }}"
                           rules:
                             - apiGroups: ["*"]
                               resources: ["*"]
@@ -299,7 +275,7 @@
                   apiVersion: policy.open-cluster-management.io/v1
                   kind: ConfigurationPolicy
                   metadata:
-                    name: gitops-app-namespace-admin-rolebinding
+                    name: vm-gitops-admin-rolebinding
                   spec:
                     remediationAction: enforce
                     severity: high
@@ -310,7 +286,7 @@
                           kind: RoleBinding
                           metadata:
                             name: gitops-app-admin
-                            namespace: "{{ application_namespace }}"
+                            namespace: "{{ vm_namespace }}"
                           roleRef:
                             apiGroup: rbac.authorization.k8s.io
                             kind: Role
@@ -320,60 +296,31 @@
                               name: openshift-gitops-argocd-application-controller
                               namespace: openshift-gitops
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Create PlacementBinding for GitOps RBAC Policy
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: PlacementBinding
-        name: gitops-app-namespace-rbac-binding
-        namespace: gitops-rbac-policies
+        name: vm-gitops-namespace-rbac-binding
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           placementRef:
-            name: sno-gitops-rbac-placement
+            name: vm-rbac-placement
             apiGroup: cluster.open-cluster-management.io
             kind: Placement
           subjects:
-            - name: gitops-app-namespace-rbac
+            - name: vm-gitops-namespace-rbac
               apiGroup: policy.open-cluster-management.io
               kind: Policy
       args: "{{ k8s_auth_params }}"
-    
-    - name: Wait for Policy to be created and distributed
-      kubernetes.core.k8s_info:
-        api_version: policy.open-cluster-management.io/v1
-        kind: Policy
-        name: gitops-app-namespace-rbac
-        namespace: gitops-rbac-policies
-      args: "{{ k8s_auth_params }}"
-      register: policy_status
-      until: policy_status.resources | length > 0
-      retries: 10
-      delay: 5
-    
-    - name: Display RBAC policy status
-      ansible.builtin.debug:
-        msg:
-          - "=========================================="
-          - "GitOps RBAC Policy Created"
-          - "=========================================="
-          - "Policy: gitops-app-namespace-rbac"
-          - "Namespace: gitops-rbac-policies"
-          - "Target: All SNO clusters in sno-demo"
-          - ""
-          - "The policy will ensure:"
-          - "1. Namespace {{ application_namespace }} exists"
-          - "2. ServiceAccount openshift-gitops-argocd-application-controller exists"
-          - "3. Role with full permissions in {{ application_namespace }}"
-          - "4. RoleBinding granting GitOps SA admin access"
-          - "=========================================="
-    
+
     - name: Create Policy for VolSync rsync-tls Secret on SNO clusters
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: Policy
-        name: volsync-rsync-tls-secret
-        namespace: gitops-rbac-policies
+        name: vm-volsync-rsync-tls-secret
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           metadata:
@@ -389,7 +336,7 @@
                   apiVersion: policy.open-cluster-management.io/v1
                   kind: ConfigurationPolicy
                   metadata:
-                    name: volsync-rsync-tls-secret
+                    name: vm-volsync-rsync-tls-secret
                   spec:
                     remediationAction: enforce
                     severity: high
@@ -399,63 +346,36 @@
                           apiVersion: v1
                           kind: Secret
                           metadata:
-                            name: volsync-rsync-tls-mysql-replicationsource
-                            namespace: "{{ application_namespace }}"
+                            name: "{{ volsync_key_secret }}"
+                            namespace: "{{ vm_namespace }}"
                           type: Opaque
                           stringData:
                             psk.txt: "{{ volsync_secret_key.stdout }}"
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Create PlacementBinding for VolSync Secret Policy
       kubernetes.core.k8s:
         api_version: policy.open-cluster-management.io/v1
         kind: PlacementBinding
-        name: volsync-rsync-tls-secret-binding
-        namespace: gitops-rbac-policies
+        name: vm-volsync-rsync-tls-secret-binding
+        namespace: "{{ policy_namespace }}"
         state: present
         definition:
           placementRef:
-            name: sno-gitops-rbac-placement
+            name: vm-rbac-placement
             apiGroup: cluster.open-cluster-management.io
             kind: Placement
           subjects:
-            - name: volsync-rsync-tls-secret
+            - name: vm-volsync-rsync-tls-secret
               apiGroup: policy.open-cluster-management.io
               kind: Policy
       args: "{{ k8s_auth_params }}"
-    
-    - name: Wait for VolSync Secret Policy to be created and distributed
-      kubernetes.core.k8s_info:
-        api_version: policy.open-cluster-management.io/v1
-        kind: Policy
-        name: volsync-rsync-tls-secret
-        namespace: gitops-rbac-policies
-      args: "{{ k8s_auth_params }}"
-      register: volsync_policy_status
-      until: volsync_policy_status.resources | length > 0
-      retries: 10
-      delay: 5
-    
-    - name: Display VolSync Secret policy status
-      ansible.builtin.debug:
-        msg:
-          - "=========================================="
-          - "VolSync rsync-tls Secret Policy Created"
-          - "=========================================="
-          - "Policy: volsync-rsync-tls-secret"
-          - "Namespace: gitops-rbac-policies"
-          - "Target: All SNO clusters in sno-demo"
-          - ""
-          - "The policy will ensure:"
-          - "Secret 'volsync-rsync-tls-mysql-replicationsource' exists in {{ application_namespace }}"
-          - "Secret contains PSK for rsync-tls replication"
-          - "=========================================="
-    
-    - name: Create Placement for SNO clusters
+
+    - name: Create Placement for all SNO clusters (PVC ApplicationSet)
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
         kind: Placement
-        name: sno-app-placement
+        name: vm-placement-all
         namespace: openshift-gitops
         state: present
         definition:
@@ -468,12 +388,12 @@
                     matchLabels:
                       cluster-type: sno
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create ApplicationSet for Quarkus MySQL App
+
+    - name: Create ApplicationSet for the DR demo VM (active cluster only)
       kubernetes.core.k8s:
         api_version: argoproj.io/v1alpha1
         kind: ApplicationSet
-        name: quarkus-mysql-appset
+        name: fedora-vm-appset
         namespace: openshift-gitops
         state: present
         definition:
@@ -483,27 +403,23 @@
                   configMapRef: acm-placement
                   labelSelector:
                     matchLabels:
-                      cluster.open-cluster-management.io/placement: "sno-app-placement-active"
+                      cluster.open-cluster-management.io/placement: "vm-placement-active"
                   requeueAfterSeconds: 180
             template:
               metadata:
-                annotations: {}
-                  #apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
-                  #apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
-                  #argocd.argoproj.io/skip-reconcile: "true"
                 labels:
-                  #apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  app: fedora-dr-vm
                   velero.io/exclude-from-backup: 'true'
-                name: "quarkus-web-app-{{ '{{name}}' }}"
+                name: "fedora-dr-vm-{{ '{{name}}' }}"
               spec:
                 project: default
                 sources:
                   - repoURL: "{{ git_repo_url }}"
                     targetRevision: "{{ git_repo_branch }}"
-                    path: "{{ git_repo_path }}"
+                    path: "{{ vm_git_path }}"
                 destination:
                   server: "{{ '{{server}}' }}"
-                  namespace: "{{ application_namespace }}"
+                  namespace: "{{ vm_namespace }}"
                 syncPolicy:
                   automated:
                     prune: true
@@ -518,12 +434,12 @@
                       factor: 2
                       maxDuration: 3m
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create ApplicationSet for Quarkus MySQL PVC
+
+    - name: Create ApplicationSet for the VM data disk PVC (all clusters)
       kubernetes.core.k8s:
         api_version: argoproj.io/v1alpha1
         kind: ApplicationSet
-        name: quarkus-mysql-pvc-appset
+        name: vm-data-pvc-appset
         namespace: openshift-gitops
         state: present
         definition:
@@ -533,27 +449,23 @@
                   configMapRef: acm-placement
                   labelSelector:
                     matchLabels:
-                      cluster.open-cluster-management.io/placement: "sno-app-placement"
+                      cluster.open-cluster-management.io/placement: "vm-placement-all"
                   requeueAfterSeconds: 180
             template:
               metadata:
-                annotations: {}
-                  #apps.open-cluster-management.io/ocm-managed-cluster: "{{ '{{name}}' }}"
-                  #apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: openshift-gitops
-                  #argocd.argoproj.io/skip-reconcile: "true"
                 labels:
-                  #apps.open-cluster-management.io/pull-to-ocm-managed-cluster: 'true'
+                  app: fedora-dr-vm
                   velero.io/exclude-from-backup: 'true'
-                name: "quarkus-mysql-pvc-{{ '{{name}}' }}"
+                name: "vm-data-pvc-{{ '{{name}}' }}"
               spec:
                 project: default
                 sources:
                   - repoURL: "{{ git_repo_url }}"
                     targetRevision: "{{ git_repo_branch }}"
-                    path: "app/pvc"
+                    path: "{{ pvc_git_path }}"
                 destination:
                   server: "{{ '{{server}}' }}"
-                  namespace: "{{ application_namespace }}"
+                  namespace: "{{ vm_namespace }}"
                 syncPolicy:
                   automated:
                     prune: true
@@ -568,8 +480,8 @@
                       factor: 2
                       maxDuration: 3m
       args: "{{ k8s_auth_params }}"
-    
-    - name: Create ManagedClusterSetBinding for open-cluster-management-global-set namespace
+
+    - name: Create ManagedClusterSetBinding for open-cluster-management-global-set
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta2
         kind: ManagedClusterSetBinding
@@ -580,16 +492,12 @@
           spec:
             clusterSet: sno-demo
       args: "{{ k8s_auth_params }}"
-    
+
     - name: Create VolSync DR config on hub (storage classes + Submariner address)
-      # Read by acm-policy-volsync-automate.yaml: the standby ReplicationDestination
-      # picks up serviceType/storage classes from here, and (when Submariner is on)
-      # the active ReplicationSource is pointed at the clusterset.local address of
-      # the exported destination service instead of a public LoadBalancer.
       kubernetes.core.k8s:
         api_version: v1
         kind: ConfigMap
-        name: volsync-dr-config
+        name: volsync-dr-config-vm
         namespace: open-cluster-management-global-set
         state: present
         definition:
@@ -598,62 +506,35 @@
             serviceType: "{{ 'ClusterIP' if ((submariner_enabled | default(true) | bool) and (volsync_use_submariner | default(true) | bool)) else 'LoadBalancer' }}"
             storageClassName: "{{ volsync_storage_class }}"
             volumeSnapshotClassName: "{{ volsync_snapshot_class }}"
-            address: "{{ volsync_destination_service }}.{{ application_namespace }}.svc.clusterset.local"
+            address: "{{ volsync_destination_service }}.{{ vm_namespace }}.svc.clusterset.local"
       args: "{{ k8s_auth_params }}"
 
-    - name: Apply VolSync Automation ACM Policies
+    - name: Apply VolSync VM Automation ACM Policies
       kubernetes.core.k8s:
         state: present
-        src: "{{ playbook_dir }}/acm-policy-volsync-automate.yaml"
+        src: "{{ playbook_dir }}/acm-policy-volsync-vm.yaml"
       args: "{{ k8s_auth_params }}"
-    
-    - name: Wait for VolSync policies to be created
+
+    - name: Wait for VolSync VM policies to be created
       kubernetes.core.k8s_info:
         api_version: policy.open-cluster-management.io/v1
         kind: Policy
         name: "{{ item }}"
         namespace: open-cluster-management-global-set
       args: "{{ k8s_auth_params }}"
-      register: policy_status
-      until: policy_status.resources | length > 0
+      register: vm_policy_status
+      until: vm_policy_status.resources | length > 0
       retries: 10
       delay: 5
       loop:
-        - vs-source-hub-views
-        - vs-dest-info-hub
-        - vs-source-active
-        - vs-dest-active-del
-        - vs-source-standby-del
-        - vs-dest-standby
-    
-    - name: Display VolSync automation policy status
-      ansible.builtin.debug:
-        msg:
-          - "=========================================="
-          - "VolSync Automation ACM Policies Created"
-          - "=========================================="
-          - "Policies created in: open-cluster-management-global-set"
-          - ""
-          - "Active Cluster Policies:"
-          - "- volsync-replicationsource-active: Creates ReplicationSource with destination address"
-          - "- volsync-destination-active-delete: Removes ReplicationDestination from active"
-          - ""
-          - "Standby Cluster Policies:"
-          - "- volsync-destination-standby: Maintains ReplicationDestination"
-          - "- volsync-replicationsource-standby-delete: Removes ReplicationSource from standby"
-          - ""
-          - "The policies will automatically:"
-          - "1. Create ReplicationDestination on standby clusters"
-          - "2. Lookup destination address from standby clusters"
-          - "3. Create ReplicationSource on active cluster with discovered address"
-          - "4. Remove incorrect resources from each cluster type"
-          - "=========================================="
-    
+        - vm-vs-source-hub-views
+        - vm-vs-dest-info-hub
+        - vm-vs-source-active
+        - vm-vs-dest-active-del
+        - vm-vs-source-standby-del
+        - vm-vs-dest-standby
+
     - name: Export VolSync destination service over Submariner (standby clusters)
-      # Makes the VolSync ReplicationDestination rsync-tls Service reachable
-      # across the Submariner link via <service>.<ns>.svc.clusterset.local, so
-      # cross-cluster DR replication does not depend on a public LoadBalancer.
-      # Additive: the existing LoadBalancer-based address discovery is untouched.
       when:
         - submariner_enabled | default(true) | bool
         - volsync_use_submariner | default(true) | bool
@@ -662,8 +543,8 @@
           kubernetes.core.k8s:
             api_version: cluster.open-cluster-management.io/v1beta1
             kind: Placement
-            name: sno-submariner-standby-placement
-            namespace: gitops-rbac-policies
+            name: vm-submariner-standby-placement
+            namespace: "{{ policy_namespace }}"
             state: present
             definition:
               spec:
@@ -683,8 +564,8 @@
           kubernetes.core.k8s:
             api_version: policy.open-cluster-management.io/v1
             kind: Policy
-            name: volsync-submariner-serviceexport
-            namespace: gitops-rbac-policies
+            name: vm-volsync-submariner-serviceexport
+            namespace: "{{ policy_namespace }}"
             state: present
             definition:
               metadata:
@@ -700,15 +581,12 @@
                       apiVersion: policy.open-cluster-management.io/v1
                       kind: ConfigurationPolicy
                       metadata:
-                        name: volsync-submariner-serviceexport
+                        name: vm-volsync-submariner-serviceexport
                       spec:
                         remediationAction: enforce
                         severity: high
-                        # Only export once the VolSync rsync-tls Service exists on
-                        # this (standby) cluster; skip on the active cluster where
-                        # the destination Service is absent.
                         object-templates-raw: |
-                          {% raw %}{{- $svc := (lookup "v1" "Service" "{% endraw %}{{ application_namespace }}{% raw %}" "{% endraw %}{{ volsync_destination_service }}{% raw %}") }}
+                          {% raw %}{{- $svc := (lookup "v1" "Service" "{% endraw %}{{ vm_namespace }}{% raw %}" "{% endraw %}{{ volsync_destination_service }}{% raw %}") }}
                           {{- if $svc.metadata.name }}
                           - complianceType: musthave
                             objectDefinition:
@@ -716,7 +594,7 @@
                               kind: ServiceExport
                               metadata:
                                 name: {% endraw %}{{ volsync_destination_service }}{% raw %}
-                                namespace: {% endraw %}{{ application_namespace }}{% raw %}
+                                namespace: {% endraw %}{{ vm_namespace }}{% raw %}
                           {{- end }}{% endraw %}
           args: "{{ k8s_auth_params }}"
 
@@ -724,107 +602,38 @@
           kubernetes.core.k8s:
             api_version: policy.open-cluster-management.io/v1
             kind: PlacementBinding
-            name: volsync-submariner-serviceexport-binding
-            namespace: gitops-rbac-policies
+            name: vm-volsync-submariner-serviceexport-binding
+            namespace: "{{ policy_namespace }}"
             state: present
             definition:
               placementRef:
-                name: sno-submariner-standby-placement
+                name: vm-submariner-standby-placement
                 apiGroup: cluster.open-cluster-management.io
                 kind: Placement
               subjects:
-                - name: volsync-submariner-serviceexport
+                - name: vm-volsync-submariner-serviceexport
                   apiGroup: policy.open-cluster-management.io
                   kind: Policy
           args: "{{ k8s_auth_params }}"
 
-        - name: Display Submariner ServiceExport status
-          ansible.builtin.debug:
-            msg:
-              - "=========================================="
-              - "VolSync ServiceExport Policy created (Submariner DR path)"
-              - "Service: {{ volsync_destination_service }} in {{ application_namespace }}"
-              - "Exported on: standby clusters (app-role != active)"
-              - "Cross-cluster address: {{ volsync_destination_service }}.{{ application_namespace }}.svc.clusterset.local"
-              - "=========================================="
-
-    - name: Wait for ApplicationSet to be created
-      kubernetes.core.k8s_info:
-        api_version: argoproj.io/v1alpha1
-        kind: ApplicationSet
-        name: quarkus-mysql-appset
-        namespace: openshift-gitops
-      args: "{{ k8s_auth_params }}"
-      register: appset_status
-      until: appset_status.resources | length > 0
-      retries: 10
-      delay: 5
-    
-    - name: Get deployed Applications from ApplicationSet
-      kubernetes.core.k8s_info:
-        api_version: argoproj.io/v1alpha1
-        kind: Application
-        namespace: openshift-gitops
-        label_selectors:
-          - app=quarkus-mysql-app
-      args: "{{ k8s_auth_params }}"
-      register: argo_apps
-    
-    - name: Display deployment status
+    - name: Deployment summary
       ansible.builtin.debug:
         msg:
           - "=========================================="
-          - "ACM Application Deployment Completed"
+          - "VM DR deployment complete"
           - "=========================================="
-          - "Application: quarkus-mysql-app"
-          - "ApplicationSet: quarkus-mysql-appset"
-          - "VolSync Destination ApplicationSet: volsync-replicationdestination-appset"
-          - "VolSync Automation: ACM Policies (acm-policy-volsync-automate.yaml)"
-          - "Namespace: openshift-gitops"
-          - "Git Repository: {{ git_repo_url }}"
-          - "Git Path (App): {{ git_repo_path }}"
-          - "Git Path (VolSync Destination): app/volsync/destination"
-          - "Git Branch: {{ git_repo_branch }}"
-          - "Target Namespace: {{ application_namespace }}"
+          - "VM: fedora-dr-vm  (namespace {{ vm_namespace }})"
+          - "Active cluster: {{ selected_cluster }}"
+          - "Data disk: vm-data-pvc (replicated by VolSync every 5 min)"
           - ""
-          - "Placements:"
-          - "- Active Cluster: sno-app-placement-active ({{ selected_cluster }})"
-          - "  * Quarkus Application"
-          - "  * VolSync ReplicationSource (via ACM Policy)"
-          - "- Standby Clusters: sno-app-placement-standby"
-          - "  * VolSync ReplicationDestination"
-          - "- All SNO Clusters: sno-app-placement"
+          - "ApplicationSets:  fedora-vm-appset (active), vm-data-pvc-appset (all)"
+          - "VolSync policies: acm-policy-volsync-vm.yaml (open-cluster-management-global-set)"
           - ""
-          - "ArgoCD Applications Created:"
-          - "{{ argo_apps.resources | map(attribute='metadata.name') | list | join('\n') if argo_apps.resources | length > 0 else 'Waiting for placement decisions...' }}"
+          - "Verify (active cluster):"
+          - "  oc get vmi,replicationsource -n {{ vm_namespace }}"
+          - "  virtctl console fedora-dr-vm -n {{ vm_namespace }}   # then: cat /mnt/data/heartbeat.log"
           - ""
-          - "Sync Policy: Automatic (prune + selfHeal)"
-          - ""
-          - "RBAC Policy Deployed:"
-          - "- Policy: gitops-app-namespace-rbac"
-          - "- ServiceAccount: openshift-gitops-argocd-application-controller"
-          - "- Permissions: Full admin access in {{ application_namespace }}"
-          - ""
-          - "VolSync Configuration:"
-          - "- ReplicationDestination: Managed by ACM policy on standby clusters"
-          - "- ReplicationSource: Managed by ACM policy on active cluster"
-          - "- Address discovery: Automatic via ACM policy lookup"
-          - "- Replication schedule: Every 5 minutes"
-          - "- Ready for disaster recovery scenarios"
-          - "=========================================="
-          - ""
-          - "Next Steps:"
-          - "1. Monitor ArgoCD applications:"
-          - "   oc get applications -n openshift-gitops"
-          - ""
-          - "2. Check RBAC policy status:"
-          - "   oc get policy gitops-app-namespace-rbac -n gitops-rbac-policies"
-          - ""
-          - "3. Access ArgoCD UI:"
-          - "   oc get route openshift-gitops-server -n openshift-gitops"
-          - ""
-          - "4. Check application on target clusters:"
-          - "   oc get pods -n {{ application_namespace }}"
-          - "   oc get route -n {{ application_namespace }}"
-          - ""
+          - "Fail over (on the hub):"
+          - "  oc label managedcluster <standby> app-role=active  --overwrite"
+          - "  oc label managedcluster {{ selected_cluster }} app-role=standby --overwrite"
           - "=========================================="

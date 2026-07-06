@@ -1,837 +1,572 @@
-# Single Node OpenShift - Disaster Recovery Example
+# Single Node OpenShift — Application Disaster Recovery
 
-This Ansible automation demonstrates **Disaster Recovery (DR) for applications across two Single Node OpenShift (SNO) clusters** deployed on OpenShift Virtualization (KubeVirt).
+This Ansible automation stands up **two Single Node OpenShift (SNO) clusters** and
+demonstrates **automated application Disaster Recovery (DR)** between them: an
+active/standby Quarkus + MySQL app whose data is replicated with VolSync and whose
+failover/failback is driven entirely by **Red Hat Advanced Cluster Management (ACM)
+policies** and **OpenShift GitOps (ArgoCD)**.
+
+The two SNO clusters can each be created on **either platform** — as VMs on an
+existing **OpenShift Virtualization** host, or as native **AWS IPI** clusters — and
+mixed freely (e.g. one on-prem, one in AWS). Once the clusters exist, **the rest of
+the workflow is identical** regardless of where they run.
 
 ## Architecture
 
-![Architecture Diagram](./images/architecture.drawio.png)  
+![Architecture Diagram](./images/architecture.drawio.png)
 
+## Two ways to create infrastructure (and one common flow)
 
-## Quick Start
+Repo provides support for 2 infrastructure types:
 
-Complete end-to-end deployment in 5 steps:
+| | OpenShift Virtualization | AWS IPI |
+|---|---|---|
+| **Command** | `./ansible-runner.sh deploy` | `./ansible-runner.sh aws-deploy` |
+| **Where it runs** | Ansible **in a Podman container** | Ansible **directly on the host** |
+| **Needs a kubeconfig?** | **Yes** — builds VMs on an *existing* hub OCP cluster | **No** — `openshift-install` creates the cluster from scratch |
+| **Key tooling** | Podman + `oc` / k8s modules (in the image) | `openshift-install` + `aws` CLI + `~/.aws` (on the host) |
+| **Playbook** | `deploy-sno.yml` | `deploy-sno-aws.yml` |
 
-```bash
-# 1. Initial setup - build container image
-./setup.sh
+> **Why the split?** The container-based flow (`build`/`deploy`/`destroy`) exists to
+> create SNO **VMs on top of an OpenShift cluster you already have** — so it mounts a
+> kubeconfig and talks to that hub's API. The AWS flow provisions a brand-new cluster
+> with `openshift-install`, which needs the `aws` CLI and `~/.aws` credentials that do
+> **not** exist inside the container — so it runs on the host and needs **no
+> kubeconfig at all**. Running an AWS playbook through the container is blocked with a
+> clear error for exactly this reason.
 
-# 2. Configure authentication
-export KUBECONFIG=~/.kube/config  # Point to your hub cluster
+After the clusters are up, the **common** commands (`acmimport`, `operators`,
+`deployapp`, …) run against clusters from *either* platform.
 
-# 3. Deploy two SNO clusters (30-60 minutes each)
-./ansible-runner.sh deploy
-
-# 4. Deploy infrastructure operators (MetalLB, LVM, GitOps, VolSync)
-./ansible-runner.sh operators
-
-# 5. Deploy application with disaster recovery
-./ansible-runner.sh deployapp
+```
+┌─ Create infrastructure (pick per cluster) ─────────────────────────────┐
+│                                                                        │
+│   OpenShift Virtualization          AWS IPI                            │
+│   ./ansible-runner.sh deploy        ./ansible-runner.sh aws-deploy     │
+│   (container, needs hub kubeconfig) (host, needs aws creds)            │
+│                                                                        │
+└───────────────────────────────┬────────────────────────────────────────┘
+                                │  clusters now exist + imported to ACM
+                                ▼
+┌─ Common end-to-end flow (same for both platforms) ─────────────────────┐
+│   operators → deployapp → test replication → failover                  │
+│   (operators installs ACM on the hub, imports clusters, deploys the    │
+│    operator stack; use deploycnv + deployvm for the VM workload)       │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-**That's it!** You now have:
-- Two SNO clusters with full operator stack
-- Active-Standby application configuration
-- Automated VolSync replication (every 5 minutes)
-- ArgoCD managing application lifecycle
-
-![ReplicationSource](./images/ReplicationSource.png)
-
-![ReplicationDestination](./images/ReplicationDestination.png)
-
-![Application Deployemnt](./images/appdeploy.png)
-
-![Cluster Label Control](./images/labels.png)
-
-
-
-## Purpose
-
-This project showcases a complete DR strategy for applications running on edge/remote SNO clusters:
-
-- **Infrastructure as Code**: Automated deployment of two SNO clusters on OpenShift Virtualization
-- **Application Deployment**: Sample Quarkus web application with MySQL backend for DR testing
-- **Network Connectivity**: MetalLB for LoadBalancer services and external access
-- **Storage Management**: Configurable local storage and LVM operators for persistent data
-- **GitOps Integration**: OpenShift GitOps (Argo CD) for declarative application deployment
-- **Advanced Cluster Management (ACM)**: Centralized policy-based operator and configuration deployment
-- **VolSync Replication**: Automated PVC replication between active and standby clusters
-
-## Overview
-
-This automation handles the complete deployment lifecycle:
-- Prerequisites validation (namespace, storage, secrets)
-- OpenShift installation preparation (install-config, ISO generation)
-- Virtual Machine creation with proper resources
-- Installation monitoring and cluster validation
-- Credential extraction and artifact storage
-- ACM policy deployment for operators (MetalLB, Local Storage, LVM, OpenShift GitOps, VolSync)
+---
 
 ## Prerequisites
 
-### On the Host OpenShift Cluster
+### Control node (your workstation / bastion) — always
 
-1. **OpenShift Virtualization** installed and configured
-2. **Storage Class** available for persistent volumes (e.g., OCS, NFS)
-3. **Sufficient resources**:
-   - CPU: 8+ cores available
-   - Memory: 32+ GB available
-   - Storage: 120+ GB available
+| Tool | OpenShift Virt flow | AWS flow |
+|---|---|---|
+| **Podman** (runs Ansible in a container) | ✅ required | — |
+| **`oc`** CLI | recommended | recommended |
+| **`ansible-playbook`** on the host | — | ✅ required |
+| **`openshift-install`** on the host | — | ✅ required |
+| **`aws`** CLI on the host | — | ✅ required |
 
-### On the Control Node (Your Workstation/Bastion)
+```bash
+# Podman (OpenShift Virt flow)
+sudo dnf install -y podman          # RHEL/Fedora
+sudo apt install -y podman          # Debian/Ubuntu
 
-**No Ansible installation required!** This automation uses Podman to run Ansible in a container.
-
-1. **Podman** installed (or Docker):
-   ```bash
-   # RHEL/Fedora/CentOS
-   sudo dnf install -y podman
-   
-   # Ubuntu/Debian
-   sudo apt install -y podman
-   ```
-
-2. **OpenShift CLI** (optional but recommended):
-   - `oc` command-line tool for getting tokens
-   - Download from: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/
-
-### Required Files
-
-1. **Pull Secret** from Red Hat:
-   - Download from: https://console.redhat.com/openshift/install/pull-secret
-   - Save as: `pull-secret.json` in the project directory
-
-2. **SSH Public Key**:
-   - Generate: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa`
-   - Save public key as: `ssh-key.pub` in the project directory
-
-3. **OpenShift Access** (for ACM integration):
-   
-   Choose one of these authentication methods:
-   
-   **Option A: Kubeconfig (Recommended)**
-   ```bash
-   # Use existing kubeconfig for hub cluster
-   export KUBECONFIG=~/.kube/config
-   
-   # Or place in project directory
-   cp ~/.kube/config ./kubeconfig
-   ```
-   
-   **Option B: API Token**
-   ```bash
-   # Login to your OpenShift hub cluster
-   oc login https://api.your-hub-cluster.example.com:6443
-   
-   # Get token
-   export OPENSHIFT_TOKEN=$(oc whoami -t)
-   ```
-
-## Configuration
-
-### Basic Configuration
-
-Edit `inventory/group_vars/all.yml`:
-
-```yaml
-# Authentication: Use kubeconfig OR token
-# Priority: kubeconfig > token
-
-# OpenShift API URL (required for token authentication)
-openshift_api_url: "https://api.your-cluster.example.com:6443"
-
-# Token authentication (set via OPENSHIFT_TOKEN env var)
-# OR
-# Kubeconfig authentication (set via KUBECONFIG env var or place at ./kubeconfig)
-
-# SNO Cluster Configuration
-sno_cluster_name: "sno-cluster"
-sno_base_domain: "example.com"
-sno_namespace: "sno-clusters"
-
-# VM Specifications (for OpenShift Virtualization)
-sno_vm_cores: 8
-sno_vm_memory: "32Gi"
-sno_vm_disk_size: "120Gi"
-
-# Storage
-sno_storage_class: "ocs-storagecluster-ceph-rbd"
-
-# OpenShift Version
-sno_openshift_version: "4.14.8"
+# Host tools (AWS flow)
+sudo dnf install -y ansible-core awscli
+# openshift-install: download for your version from
+#   https://mirror.openshift.com/pub/openshift-v4/clients/ocp/
 ```
 
-### Per-Cluster Configuration
+### Required files (both flows)
 
-Edit `inventory/host_vars/sno-cluster-01.yml` for cluster-specific settings:
+1. **Pull secret** — download from
+   <https://console.redhat.com/openshift/install/pull-secret> and save as
+   `pull-secret.json` in the repo root.
+2. **SSH public key** — `ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa` and copy the
+   public key to `ssh-key.pub` in the repo root.
+
+### Platform credentials
+
+**OpenShift Virtualization** — a kubeconfig (or token) for the **existing hub OCP
+cluster** the VMs will run on:
+
+```bash
+export KUBECONFIG=~/.kube/config        # or place a file at ./kubeconfig
+# or:  export OPENSHIFT_TOKEN=$(oc whoami -t)
+```
+
+**AWS** — credentials for each target account. The cleanest approach is a **named
+profile per cluster** set as `aws_profile` in that cluster's host_vars (mapping to a
+section in `~/.aws/credentials`); ambient `AWS_PROFILE` / `AWS_ACCESS_KEY_ID` also
+work. The base domain must be a **public Route53 hosted zone** in the account.
+
+```bash
+# ~/.aws/credentials
+[sno1]
+aws_access_key_id = AKIA...
+aws_secret_access_key = ...
+```
+
+---
+
+## Step 1 — Create the infrastructure
+
+You need **two** SNO clusters. Create each one with whichever flow fits — they can be
+on different platforms.
+
+### Option A — OpenShift Virtualization (container flow)
+
+Define the cluster(s) in `inventory/host_vars/<name>.yml` and list them in the
+`[sno_clusters]` group in `inventory/hosts`:
 
 ```yaml
+# inventory/host_vars/sno-cluster-01.yml
 sno_cluster_name: "sno-cluster-01"
 sno_base_domain: "lab.example.com"
 sno_vm_cores: 16
 sno_vm_memory: "64Gi"
+sno_vm_disk_size: "120Gi"
+sno_storage_class: "ocs-storagecluster-ceph-rbd"
+metallb_ip_address_ranges:
+  - "192.168.1.100-192.168.1.110"
 ```
 
-## Usage
-
-### 1. Initial Setup
-
-Run the setup script to build the Ansible container image:
-
 ```bash
-./setup.sh
-```
+# One-time: build the Ansible container image
+./setup.sh                                  # or: ./ansible-runner.sh build
 
-This will:
-- Check for Podman installation
-- Build the Ansible runner container image
-- Validate prerequisites
-
-### 2. Prepare Credentials
-
-```bash
-# Hub cluster authentication
+# Point at the EXISTING hub cluster the VMs run on
 export KUBECONFIG=~/.kube/config
-# OR
-export OPENSHIFT_TOKEN=$(oc whoami -t)
 
-# Ensure pull secret exists
-ls -l pull-secret.json
-
-# Ensure SSH key exists
-ls -l ssh-key.pub
-```
-
-**Note:** The automation will automatically detect and use kubeconfig if available, otherwise it will fall back to token authentication.
-
-### 3. Deploy SNO Cluster
-
-```bash
-# Deploy cluster on OpenShift Virtualization
-./ansible-runner.sh deploy
-
-# Deploy specific cluster
+# Deploy (30–60 min per cluster). --limit picks a single host.
 ./ansible-runner.sh deploy --limit sno-cluster-01
-
-# Deploy with verbose output
-./ansible-runner.sh deploy -v
 ```
 
-### 4. Monitor Installation
+Credentials for each finished cluster land in `artifacts/<cluster-name>/`
+(`kubeconfig`, `kubeadmin-password`, `cluster-info.txt`).
 
-The playbook will:
-1. Validate prerequisites
-2. Generate installation files and ISO
-3. Create the VM on OpenShift Virtualization
-4. Boot from installation ISO
-5. Monitor bootstrap and installation progress
-6. Extract credentials when complete
+### Option B — AWS IPI (host flow)
 
-Installation typically takes 30-60 minutes.
+Define the cluster(s) in `inventory/host_vars/<name>.yml` and list them in the
+`[sno_aws_clusters]` group in `inventory/hosts`:
 
-### 5. Access the Cluster
-
-After successful installation, credentials are saved in:
-```
-artifacts/sno-cluster-01/
-├── kubeconfig
-├── kubeadmin-password
-└── cluster-info.txt
+```yaml
+# inventory/host_vars/sno-aws-1.yml
+sno_cluster_name: "sno-aws-1"
+aws_profile: "sno1"          # named profile in ~/.aws/credentials (selects the account)
+aws_region: "us-east-1"
+# sno_base_domain is auto-discovered from the account's Route53 public zone
+# if omitted; set it explicitly to pin a specific zone.
 ```
 
-Access the cluster:
 ```bash
-# Export kubeconfig
+# Runs on the HOST (no container, no kubeconfig needed).
+./ansible-runner.sh aws-deploy --limit sno-aws-1
+
+# Deploy every AWS cluster at once:
+./ansible-runner.sh aws-deploy
+```
+
+`openshift-install` provisions everything (VPC, subnets, security groups, the single
+control-plane instance + temporary bootstrap, the API/Ingress load balancers, and the
+Route53 records). Credentials also land in `artifacts/<cluster-name>/`.
+
+> ⚠️ Do **not** run `./ansible-runner.sh deploy` or `run deploy-sno-aws.yml` for AWS —
+> the container has no `openshift-install`/`aws` CLI and no `~/.aws` mount, and there
+> is no pre-existing cluster to authenticate to. Use `aws-deploy` (the runner blocks
+> the container path with an explanatory error).
+
+### Verify the clusters
+
+```bash
 export KUBECONFIG=artifacts/sno-cluster-01/kubeconfig
-
-# Verify cluster
-oc get nodes
-oc get co
-
-# Access console
-# URL: https://console-openshift-console.apps.<cluster-name>.<base-domain>
-# User: kubeadmin
-# Password: contents of artifacts/sno-cluster-01/kubeadmin-password
+oc get nodes          # one Ready node
+oc get co             # all cluster operators Available
 ```
 
-### 6. Deploy ACM and Operators
+---
 
-After deploying SNO clusters, deploy ACM policies for operator management:
+## Step 2 — Install ACM, import clusters, deploy operators
+
+From here on, **the flow is the same for both platforms.** These commands run in the
+container and talk to your **hub** cluster (the `acm-hub` cluster), so point
+`KUBECONFIG` at it:
 
 ```bash
-# Deploy ACM policies for infrastructure operators
+export KUBECONFIG=~/.kube/config     # the acm-hub cluster
+```
+
+The `operators` command does all three hub-side steps in one run:
+
+```bash
 ./ansible-runner.sh operators
-
-# This will install:
-# - MetalLB operator
-# - Local Storage operator (if secondary disk configured)
-# - LVM Storage operator
-# - OpenShift GitOps operator (on hub and SNO clusters)
-# - VolSync operator for disaster recovery
 ```
 
-### 7. Deploy Applications
+1. **Installs ACM** (the `advanced-cluster-management` operator + `MultiClusterHub`)
+   on the **`acm-hub` cluster only**, if it isn't already present.
+2. **Imports** every other cluster found under `credentials/` **or** `artifacts/`
+   as an ACM managed cluster (the hub itself is excluded, never imported as a DR
+   cluster).
+3. Applies ACM policies that install the operator stack on the SNO clusters.
 
-Deploy the sample Quarkus MySQL application via ACM and ArgoCD:
+> Cluster kubeconfigs are discovered from **both** `credentials/<name>/auth/kubeconfig`
+> (AWS IPI) and `artifacts/<name>/kubeconfig` (OpenShift Virtualization). You can also
+> import separately with `./ansible-runner.sh acmimport` (requires ACM already
+> installed).
+
+The hub managing the SNO clusters as a fleet (hub + two SNO DR clusters):
+
+![ACM managed clusters](./images/acm/managed-clusters.png)
+
+The operator stack is applied to the SNO clusters as ACM **governance policies**:
+
+![ACM governance policies](./images/acm/governance-policies.png)
+
+The operator stack applied to the SNO clusters:
+
+- **MetalLB** — LoadBalancer services (VolSync rsync endpoint, app route)
+- **LVM Storage** / **Local Storage** — persistent volumes
+- **OpenShift GitOps (ArgoCD)** — on the hub and the SNO clusters
+- **VolSync** — PVC replication for DR
+- **Submariner** — cross-cluster networking for the VolSync DR path when clusters are
+  on non-shared subnets (e.g. one on-prem, one in AWS)
+
+## Step 3 — Deploy the application with DR
 
 ```bash
-# Deploy application using GitOps
+# Interactive: pick which cluster is the initial ACTIVE
 ./ansible-runner.sh deployapp
 
-# This creates:
-# - ACM Application resource
-# - ArgoCD ApplicationSet
-# - Application deployed to all SNO clusters
+# Non-interactive: name the active cluster directly
+./ansible-runner.sh deployapp -e selected_cluster=sno-cluster-01
 ```
 
-## Testing the Disaster Recovery Setup
+`deployapp` labels the chosen cluster `app-role=active` and the other(s)
+`app-role=standby`, then ArgoCD renders the app to the active cluster and the ACM
+policies stand up the VolSync `ReplicationSource` (active) and `ReplicationDestination`
+(standby).
 
-### Verify the Deployment
+![Application deployment in ACM / ArgoCD](./images/appdeploy.png)
+
+You now have:
+
+- Two SNO clusters with the full operator stack
+- An active/standby Quarkus + MySQL application
+- Automated VolSync replication (every 5 minutes)
+- ArgoCD managing the application lifecycle
+
+### Alternative — a VirtualMachine workload instead of the app
+
+If you'd rather test DR with an **OpenShift Virtualization VM** than the Quarkus app,
+use `deployvm` in place of `deployapp`. It follows the identical active/standby +
+VolSync design, but the workload is a Fedora VM whose **persistent data disk
+(`vm-data-pvc`) is what VolSync replicates** — directly analogous to app-pod +
+`mysql-pvc`:
 
 ```bash
-# 1. Check both SNO clusters are healthy
-export KUBECONFIG=artifacts/sno-cluster/kubeconfig
-oc get nodes
-oc get co  # All operators should be Available
+# 1. Install OpenShift Virtualization on the SNO clusters (once). On AWS the
+#    clusters must be bare-metal (*.metal) instances for KubeVirt to run VMs.
+./ansible-runner.sh deploycnv
 
-export KUBECONFIG=artifacts/sno-cluster2/kubeconfig
-oc get nodes
-oc get co
+# 2. Deploy the VM DR stack. Interactive, or -e selected_cluster=<name>
+./ansible-runner.sh deployvm
+```
 
-# 2. Verify VolSync replication on active cluster
-export KUBECONFIG=artifacts/sno-cluster/kubeconfig  # Active cluster
+- The VM (`fedora-dr-vm`, namespace `vm-dr-demo`) is scheduled by ArgoCD to the
+  **active** cluster only; boots from a public Fedora containerDisk.
+- The data-disk PVC is deployed to **all** clusters; cloud-init formats it on first
+  use, mounts it at `/mnt/data`, and appends a timestamped line to
+  `/mnt/data/heartbeat.log` every minute — that log is the data you verify survived a
+  failover.
+- VolSync source/destination lifecycle is driven by `acm-policy-volsync-vm.yaml`
+  (scoped to `vm-dr-demo`, with the same `Synchronizing=True` delete-guard on both
+  source and destination).
+
+```bash
+# Verify on the active cluster
+oc get vmi,replicationsource -n vm-dr-demo
+virtctl console fedora-dr-vm -n vm-dr-demo      # login fedora/fedora, then:
+#   cat /mnt/data/heartbeat.log
+```
+
+The VM running on the active cluster (Fedora, `vm-dr-demo`):
+
+![DR demo VirtualMachine running](./images/vm/vm-details.png)
+
+The heartbeat log on the VM's replicated data disk — the data you verify survives a
+failover:
+
+![VM heartbeat log on the replicated data disk](./images/vm/vm-heartbeat.png)
+
+Fail over the same way — flip the `app-role` labels (Step 5) — and confirm the
+heartbeat log on the new active cluster contains entries from before failover.
+
+The ACM Applications topology for the `fedora-vm-appset` ApplicationSet before and
+after a failover — the same VM tree migrates from **sno1** to **sno2** when the
+`app-role` label flips (ArgoCD prunes it on the old active and syncs it on the new):
+
+| Before failover (active = sno1) | After failover (active = sno2) |
+|---|---|
+| ![VM ApplicationSet on sno1](./images/acm/vm-appset-before-topology.png) | ![VM ApplicationSet migrated to sno2](./images/acm/vm-appset-after-topology.png) |
+
+> **Notes:** `deployvm` is an **alternative** to `deployapp` — deploy one DR stack at a
+> time, not both (their cluster-scoped VolSync policies would otherwise overlap). The
+> target SNO clusters must have **OpenShift Virtualization (CNV)** installed; on AWS
+> that requires bare-metal (`*.metal`) instances. Tear down with
+> `./ansible-runner.sh deletevm`.
+
+---
+
+## Step 4 — Verify replication
+
+```bash
+# ACTIVE cluster — the ReplicationSource pushes snapshots
+export KUBECONFIG=artifacts/sno-cluster-01/kubeconfig
 oc get replicationsource -n quarkus-web-app
-oc describe replicationsource mysql-replicationsource -n quarkus-web-app
-# Look for: Status should show "Synchronizing" or "Completed"
-
-# 3. Verify VolSync destination on standby cluster
-export KUBECONFIG=artifacts/sno-cluster2/kubeconfig  # Standby cluster
-oc get replicationdestination -n quarkus-web-app
-oc describe replicationdestination mysql-replicationdestination -n quarkus-web-app
-# Look for: LoadBalancer address and "Ready" status
-
-# 4. Access the application on active cluster
-export KUBECONFIG=artifacts/sno-cluster/kubeconfig
-oc get route -n quarkus-web-app
-# Open the route URL in your browser
 ```
 
-### Test Data Replication
+![ReplicationSource on the active cluster](./images/ReplicationSource.png)
 
 ```bash
-# 1. Add data on the active cluster
-export KUBECONFIG=artifacts/sno-cluster/kubeconfig
-APP_URL=$(oc get route quarkus-web-app -n quarkus-web-app -o jsonpath='{.spec.host}')
+# STANDBY cluster — the ReplicationDestination receives them
+export KUBECONFIG=artifacts/sno-cluster-02/kubeconfig
+oc get replicationdestination -n quarkus-web-app
+```
 
-# Create test tasks via API
+![ReplicationDestination on the standby cluster](./images/ReplicationDestination.png)
+
+Write some data on the active cluster and confirm the `lastSyncTime` advances:
+
+```bash
+export KUBECONFIG=artifacts/sno-cluster-01/kubeconfig
+APP_URL=$(oc get route quarkus-web-app -n quarkus-web-app -o jsonpath='{.spec.host}')
 curl -X POST https://${APP_URL}/api/tasks \
   -H "Content-Type: application/json" \
   -d '{"title":"Test Task 1","description":"Testing DR replication"}'
 
-curl -X POST https://${APP_URL}/api/tasks \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Test Task 2","description":"This should replicate"}'
-
-# Verify data was created
-curl https://${APP_URL}/api/tasks
-
-# 2. Wait 5 minutes for VolSync to replicate (check schedule: */5 * * * *)
-echo "Waiting for replication cycle (5 minutes)..."
-
-# 3. Monitor replication status
-oc get replicationsource mysql-replicationsource -n quarkus-web-app -o jsonpath='{.status.lastSyncTime}'
-# Timestamp should update after replication completes
+# after the next 5-minute cycle:
+oc get replicationsource -n quarkus-web-app \
+  -o jsonpath='{.items[0].status.lastSyncTime}{"\n"}'
 ```
 
-### Test Failover Scenario
+---
+
+## Step 5 — Fail over (and fail back)
+
+Failover is a **label flip** on the hub — the ACM policies react and move the app and
+the VolSync roles to the new active cluster. No re-deploy required.
+
+![Cluster label control drives failover](./images/labels.png)
 
 ```bash
-# 1. Scale down application on active cluster (simulate failure)
-export KUBECONFIG=artifacts/sno-cluster/kubeconfig
-oc scale deployment quarkus-web-app -n quarkus-web-app --replicas=0
-oc scale deployment mysql -n quarkus-web-app --replicas=0
+export KUBECONFIG=~/.kube/config     # hub
 
-# 2. Update ACM to make standby cluster active
-# Re-run deployapp and select the other cluster as active
-./ansible-runner.sh deleteapp
-./ansible-runner.sh deployapp
-# When prompted, select the standby cluster (sno-cluster2) as the new active cluster
+# Promote the standby, demote the old active
+oc label managedcluster sno-cluster-02 app-role=active  --overwrite
+oc label managedcluster sno-cluster-01 app-role=standby --overwrite
+```
 
-# 3. Verify data is available on the new active cluster
-export KUBECONFIG=artifacts/sno-cluster2/kubeconfig
+The policies then:
+
+1. Delete the `ReplicationSource` on the demoted cluster and the `ReplicationDestination`
+   on the promoted cluster — **guarded so an in-flight sync is never torn down**
+   (deletion is skipped while a resource reports `Synchronizing=True` and retried on a
+   later policy pass once the transfer completes).
+2. Recreate the destination on the new standby and the source on the new active after
+   re-running the address/keySecret lookup.
+3. ArgoCD moves the application to the new active cluster.
+
+**Fail back** by flipping the labels the other way. Verify the data survived:
+
+```bash
+export KUBECONFIG=artifacts/sno-cluster-02/kubeconfig
 APP_URL=$(oc get route quarkus-web-app -n quarkus-web-app -o jsonpath='{.spec.host}')
-curl https://${APP_URL}/api/tasks
-# Should show the tasks created earlier
+curl https://${APP_URL}/api/tasks     # tasks created earlier are present
 ```
 
-### 8. Destroy Cluster
+> For a deep dive into the ACM policy set behind failover/failback, see
+> [docs/VOLSYNC-FAILOVER-BLOG.md](docs/VOLSYNC-FAILOVER-BLOG.md).
+
+---
+
+## Tear down
 
 ```bash
-# Delete all cluster resources
-./ansible-runner.sh destroy
-
-# Delete specific cluster
+# OpenShift Virtualization clusters (container flow)
 ./ansible-runner.sh destroy --limit sno-cluster-01
+
+# AWS clusters (host flow — runs openshift-install destroy)
+./ansible-runner.sh aws-destroy --limit sno-aws-1
+
+# Remove the app / operators / cluster imports from ACM
+./ansible-runner.sh deleteapp
+./ansible-runner.sh deleteoperators
+./ansible-runner.sh acmremove
 ```
 
-### 9. Advanced Usage
+---
 
-```bash
-# Build/rebuild the Ansible container image
-./ansible-runner.sh build
+## Command reference
 
-# Run a custom playbook
-./ansible-runner.sh run examples/custom-deployment.yml
+Run `./ansible-runner.sh --help` for the full list. Grouped by role:
 
-# Open a shell in the Ansible container for debugging
-./ansible-runner.sh shell
+| Command | Runs where | Purpose |
+|---|---|---|
+| `build` | container | Build the Ansible runner image |
+| `deploy` / `destroy` | container | Create/destroy SNO **VMs** on OpenShift Virtualization (needs hub kubeconfig) |
+| `aws-deploy` / `aws-destroy` | **host** | Create/destroy SNO on **AWS IPI** (needs `openshift-install` + aws creds, **no** kubeconfig) |
+| `acmimport` / `acmremove` | container | Import/remove managed clusters in ACM (the ACM **hub** — `acm-hub` — is never imported as a DR cluster) |
+| `operators` / `deleteoperators` | container | **Install ACM on the `acm-hub` cluster** (only there, if absent), then deploy/remove the operator stack (GitOps, VolSync, …) via ACM policies |
+| `deploycnv` | container | Install **OpenShift Virtualization (CNV)** on the SNO clusters — prerequisite for `deployvm`; clusters must be bare-metal on AWS |
+| `deployapp` / `deleteapp` | container | Deploy/remove the DR **application** (Quarkus + MySQL) via ACM + ArgoCD |
+| `deployvm` / `deletevm` | container | Deploy/remove the DR **VirtualMachine** (Fedora + replicated data disk) — alternative to `deployapp`; run `deploycnv` first |
+| `artifact` | container | Collect kubeconfig/passwords for a cluster |
+| `run <playbook>` | container | Run any other playbook in the container |
+| `shell` | container | Open a shell in the Ansible container |
 
-# View all available options
-./ansible-runner.sh --help
-```
+Common options: `--limit <host>`, `-v`, `--check`.
 
-## Advanced Configuration
+---
 
-### Finding RHCOS AMI IDs for AWS
+## Configuration
 
-To find the correct RHCOS AMI for your AWS region and OpenShift version:
+Global defaults live in `inventory/group_vars/all.yml`; per-cluster overrides live in
+`inventory/host_vars/<name>.yml`. AWS-wide defaults (region, instance type, root
+volume) live in `inventory/group_vars/sno_aws_clusters.yml`.
 
-1. Visit: https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/
-2. Navigate to your OpenShift version (e.g., `4.20/`)
-3. Open `rhcos-aws.json` or check AWS EC2 console under "Public images"
-4. Search for: "Red Hat CoreOS" + your OpenShift version
-
-Example AMI IDs (these change with each RHCOS release):
-```yaml
-# us-east-1 (N. Virginia)
-aws_ami_id: "ami-0123456789abcdef0"
-
-# us-west-2 (Oregon)  
-aws_ami_id: "ami-abcdef0123456789"
-
-# eu-west-1 (Ireland)
-aws_ami_id: "ami-fedcba9876543210"
-```
-
-### AWS Resource Tagging
-
-The automation automatically tags AWS resources for management:
+Key variables:
 
 ```yaml
-Tags:
-  Name: "{{ sno_cluster_name }}"
-  cluster: "{{ sno_cluster_name }}"
-  openshift-version: "{{ sno_openshift_version }}"
-  managed-by: ansible
+# inventory/group_vars/all.yml
+sno_openshift_version: "4.22.4"          # default OpenShift version to install
+sno_cluster_name: "sno-cluster"
+sno_base_domain: "example.com"
+sno_namespace: "sno-clusters"            # OpenShift Virt namespace for the VMs
+
+# OpenShift Virtualization VM sizing
+sno_vm_cores: 8
+sno_vm_memory: "32Gi"
+sno_vm_disk_size: "120Gi"
+sno_storage_class: "ocs-storagecluster-ceph-rbd"
 ```
 
-Use these tags to:
-- Track costs in AWS Cost Explorer
-- Filter resources in AWS console
-- Create automated cleanup scripts
-- Implement resource policies
+### Custom networking (OpenShift Virtualization)
 
-### Custom Network Configuration (OpenShift Virtualization)
-
-Use NetworkAttachmentDefinitions for advanced networking:
+Attach the VM to a NetworkAttachmentDefinition:
 
 ```yaml
-# In host_vars or group_vars
+# host_vars/<name>.yml
 sno_network_attachment_definition: "sno-clusters/vlan100-network"
-sno_vm_mac_address: "52:54:00:aa:bb:cc"  # Optional
+sno_vm_mac_address: "52:54:00:aa:bb:cc"   # optional
 ```
-
-**Steps:**
-
-1. Create NetworkAttachmentDefinition:
-   ```bash
-   oc apply -f examples/network-attachment-definitions/vlan-network.yaml
-   ```
-
-2. Reference it in your configuration:
-   ```yaml
-   # inventory/host_vars/sno-cluster-01.yml
-   sno_network_attachment_definition: "sno-clusters/vlan100-network"
-   ```
-
-3. Deploy:
-   ```bash
-   ./ansible-runner.sh deploy --limit sno-cluster-01
-   ```
 
 See `examples/network-attachment-definitions/` for NAD examples.
 
-### Using Pre-Generated ISO
+### Custom install-config
 
-If you have a pre-generated ISO:
+- OpenShift Virt: `roles/sno_prepare_installation/templates/install-config.yaml.j2`
+- AWS: `roles/sno_prepare_installation/templates/install-config-aws.yaml.j2`
 
-```yaml
-sno_generate_iso: false
-sno_iso_url: "http://fileserver.example.com/rhcos-sno.iso"
-```
-
-### Custom Install Config
-
-Edit `roles/sno_prepare_installation/templates/install-config.yaml.j2` to customize:
-- Network CIDR ranges
-- Proxy settings
-- Additional manifests
-- Platform-specific settings
+---
 
 ## Troubleshooting
 
-### Authentication Issues
+### AWS: "expecting a kubeconfig" / container errors
 
-**Hub cluster authentication:**
-```bash
-# Verify kubeconfig is accessible
-echo $KUBECONFIG
-cat $KUBECONFIG
-
-# Test connection
-oc get nodes
-
-# Inside container
-./ansible-runner.sh shell
-ls -l /tmp/kubeconfig
-```
-
-**Using token:**
-```bash
-# Verify token is set
-echo $OPENSHIFT_TOKEN
-
-# Test token
-oc whoami
-
-# Refresh token if expired
-export OPENSHIFT_TOKEN=$(oc whoami -t)
-```
-
-**AWS authentication:**
-```bash
-# Verify AWS credentials
-echo $AWS_ACCESS_KEY_ID
-echo $AWS_PROFILE
-
-# Test AWS access
-aws sts get-caller-identity --region us-east-1
-
-# Inside container
-./ansible-runner.sh shell
-env | grep AWS
-```
-
-### Check VM Status (OpenShift Virtualization)
+If you tried `./ansible-runner.sh deploy` (or `run deploy-sno-aws.yml`) for an AWS
+cluster and hit a kubeconfig warning or a missing-binary error, that's expected —
+**AWS installs run on the host, not the container.** Use `aws-deploy`:
 
 ```bash
-oc get vm -n sno-clusters
-oc get vmi -n sno-clusters
+./ansible-runner.sh aws-deploy --limit sno-aws-1
 ```
 
-### Access VM Console (OpenShift Virtualization)
+The container image has no `openshift-install`/`aws` CLI, does not mount `~/.aws`, and
+mounts a kubeconfig only to talk to an existing hub — none of which applies to an AWS
+IPI install that creates its own cluster.
+
+### AWS authentication
 
 ```bash
-virtctl console <vm-name> -n sno-clusters
+aws sts get-caller-identity --profile <profile>   # confirm the profile works
+grep '^\[' ~/.aws/credentials                      # confirm the profile section exists
 ```
 
-### Check EC2 Instance (AWS)
+The `aws_profile` set in a cluster's host_vars must match a `[section]` in
+`~/.aws/credentials`. See [docs/AWS-DEPLOYMENT-GUIDE.md](docs/AWS-DEPLOYMENT-GUIDE.md).
+
+### OpenShift Virtualization
 
 ```bash
-# List EC2 instances
-aws ec2 describe-instances \
-  --filters "Name=tag:cluster,Values=sno-aws-01" \
-  --region us-east-1 \
-  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]'
-
-# SSH to instance
-ssh -i ~/.ssh/your-keypair.pem core@<elastic-ip>
-
-# View console output
-aws ec2 get-console-output --instance-id <instance-id> --region us-east-1
+oc get vm,vmi -n sno-clusters          # VM/VMI status
+virtctl console <vm-name> -n sno-clusters   # watch the install console
+oc get sc                              # verify sno_storage_class exists
 ```
 
-### View Installation Logs
+### Hub authentication
 
 ```bash
-# On the control node
-tail -f /tmp/sno-install-<cluster-name>/.openshift_install.log
+echo $KUBECONFIG && oc get nodes       # confirm the hub kubeconfig works
+export OPENSHIFT_TOKEN=$(oc whoami -t)  # refresh a token if used
+./ansible-runner.sh shell              # debug inside the container
 ```
 
-### Common Issues
+### Podman / SELinux
 
-1. **Storage class not found** (OpenShift Virtualization):
-   - Verify storage class exists: `oc get sc`
-   - Update `sno_storage_class` variable
+- Volume mounts use `:Z` for SELinux labeling automatically.
+- Rebuild the image cleanly: `podman build --no-cache -t localhost/ansible-runner:latest -f Containerfile .`
 
-2. **Insufficient resources** (OpenShift Virtualization):
-   - Check available resources on worker nodes
-   - Reduce `sno_vm_cores` and `sno_vm_memory` if needed
+More detail: [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md),
+[docs/NETWORKING.md](docs/NETWORKING.md),
+[docs/PLATFORM-COMPARISON.md](docs/PLATFORM-COMPARISON.md),
+[docs/QUICKSTART-AWS.md](docs/QUICKSTART-AWS.md).
 
-3. **Network connectivity**:
-   - OpenShift Virt: Access VM console to check progress
-   - AWS: Check security group rules, verify Elastic IP assigned
-   - Verify Route53 DNS records (AWS) or NetworkAttachmentDefinition (OpenShift Virt)
+---
 
-4. **AWS-specific issues**:
-   - **AMI not found**: Verify `aws_ami_id` is correct for your region
-   - **VPC/Subnet errors**: Ensure VPC and subnet have internet connectivity
-   - **Security group rules**: Must allow ports 6443, 22, 80, 443, 22623
-   - **Route53 zone not found**: Verify `aws_route53_zone` exists in your account
-   - **Instance launch failed**: Check EC2 instance limits and available capacity
-   - **Elastic IP limit**: You may need to request EIP limit increase
-
-5. **NetworkAttachmentDefinition not found** (OpenShift Virtualization):
-   - Verify NAD exists: `oc get network-attachment-definitions -n <namespace>`
-   - Check NAD name format: `namespace/name` or just `name` (uses VM namespace)
-   - Create NAD using examples in `examples/network-attachment-definitions/`
-
-6. **Bootstrap timeout**:
-   - OpenShift Virt: Access VM console to check progress
-   - AWS: Check EC2 console output, verify network connectivity
-   - Verify network connectivity
-   - Check ignition configuration
-
-## Project Structure
+## Project structure
 
 ```
 .
-├── Containerfile                        # Ansible container image definition
-├── ansible-runner.sh                    # Podman-based Ansible runner (main interface)
-├── setup.sh                            # Initial setup script
-├── ansible.cfg                          # Ansible configuration
-├── requirements.yml                     # Ansible collection requirements
-├── deploy-sno.yml                       # OpenShift Virtualization deployment playbook
-├── deploy-sno-aws.yml                   # AWS deployment playbook
-├── destroy-sno.yml                      # Cleanup playbook (OpenShift Virtualization)
-├── acm-deploy-infrastructure.yml        # ACM policy deployment for operators
-├── acm-deploy-application.yml           # ACM application deployment via GitOps
-├── architecture-diagram.drawio          # Architecture diagram
+├── ansible-runner.sh                    # Main interface (container + host AWS commands)
+├── setup.sh                             # One-time image build
+├── Containerfile                        # Ansible container image
+├── deploy-sno.yml / destroy-sno.yml     # OpenShift Virtualization lifecycle (container)
+├── deploy-sno-aws.yml / destroy-sno-aws.yml  # AWS IPI lifecycle (host)
+├── acm-deploy-infrastructure.yml        # ACM policies: install ACM on hub + operator stack
+├── acm-deploy-application.yml           # ACM + ArgoCD: DR application
+├── acm-deploy-vm.yml / acm-delete-vm.yml     # ACM + ArgoCD: DR VirtualMachine (alt. workload)
+├── deploy-cnv.yml                       # Install OpenShift Virtualization (CNV) on SNO clusters
+├── acm-policy-volsync-automate.yaml     # ACM policies: VolSync failover/failback (app)
+├── acm-policy-volsync-vm.yaml           # ACM policies: VolSync failover/failback (VM)
 ├── inventory/
-│   ├── hosts                           # Inventory file
+│   ├── hosts                            # [sno_clusters] and [sno_aws_clusters] groups
 │   ├── group_vars/
-│   │   └── all.yml                     # Global variables
-│   └── host_vars/
-│       ├── sno-cluster-01.yml          # OpenShift Virt cluster variables
-│       └── sno-aws-example.yml         # AWS cluster example configuration
+│   │   ├── all.yml                      # Global defaults (OpenShift version, sizing, acm_channel…)
+│   │   └── sno_aws_clusters.yml         # AWS-wide defaults (region, instance type…)
+│   └── host_vars/                       # Per-cluster config (Virt and AWS)
 ├── roles/
-│   ├── sno_prerequisites/              # Prerequisites validation
-│   ├── sno_prepare_installation/       # Installation preparation
-│   ├── sno_create_vm/                  # VM creation (OpenShift Virtualization)
-│   └── sno_monitor_installation/       # Installation monitoring
-├── app/                                 # Sample Quarkus MySQL application
-│   ├── pom.xml                         # Maven dependencies
-│   ├── src/                            # Java source code
-│   ├── openshift/                      # OpenShift manifests
-│   └── Dockerfile.native               # Native image Dockerfile
-├── examples/
-│   ├── custom-deployment.yml           # Custom deployment example
-│   ├── multi-cluster-deployment.yml    # Multiple clusters
-│   ├── network-attachment-definitions/ # NAD examples for custom networking
-│   └── host_vars/                      # Example host configurations
-└── artifacts/                           # Generated cluster credentials
-    └── <cluster-name>/
-        ├── kubeconfig
-        ├── kubeadmin-password
-        └── cluster-info.txt
+│   └── sno_prerequisites/tasks/         # auth_check, discover_clusters (credentials/+artifacts/),
+│                                        #   install_cnv, plus prepare / create-vm / monitor
+├── app/                                 # Sample Quarkus + MySQL application
+├── vm/                                  # DR demo VirtualMachine workload
+│   ├── openshift/                       #   VM + namespace (active cluster only)
+│   └── pvc/                             #   replicated data-disk PVC (all clusters)
+├── images/                              # Diagrams and screenshots used in this README
+└── artifacts/<cluster>/                 # Generated kubeconfig / kubeadmin-password
 ```
 
-## Complete Deployment Examples
+---
 
-### Example 1: Single SNO on OpenShift Virtualization
+## Security notes
 
-```bash
-# 1. Configure cluster
-cat > inventory/host_vars/sno-cluster-01.yml <<EOF
-sno_cluster_name: "sno-cluster-01"
-sno_base_domain: "lab.example.com"
-sno_vm_cores: 16
-sno_vm_memory: "64Gi"
-metallb_ip_address_ranges:
-  - "192.168.1.100-192.168.1.110"
-EOF
-
-# 2. Deploy cluster
-export KUBECONFIG=~/.kube/config
-./ansible-runner.sh deploy --limit sno-cluster-01
-
-# 3. Wait for installation (30-60 minutes)
-
-# 4. Deploy operators via ACM
-./ansible-runner.sh operators --limit sno-cluster-01
-
-# 5. Deploy application via GitOps
-./ansible-runner.sh deployapp
-```
-
-### Example 2: DR Setup with Two SNO Clusters (One on AWS, One on OpenShift Virt)
-
-```bash
-# 1. Configure OpenShift Virt cluster
-cat > inventory/host_vars/sno-cluster-01.yml <<EOF
-sno_cluster_name: "sno-cluster-01"
-sno_base_domain: "lab.example.com"
-sno_vm_cores: 16
-sno_vm_memory: "64Gi"
-metallb_ip_address_ranges:
-  - "192.168.1.100-192.168.1.110"
-EOF
-
-# 2. Configure AWS cluster
-cat > inventory/host_vars/sno-aws-01.yml <<EOF
-sno_cluster_name: "sno-aws-01"
-sno_base_domain: "example.com"
-aws_region: "us-east-1"
-aws_instance_type: "m5.4xlarge"
-aws_ami_id: "ami-0123456789abcdef0"
-aws_vpc_id: "vpc-xxxxxxxxxxxxxxxxx"
-aws_subnet_id: "subnet-xxxxxxxxxxxxxxxxx"
-aws_security_group_id: "sg-xxxxxxxxxxxxxxxxx"
-aws_key_name: "my-keypair"
-aws_route53_zone: "example.com"
-aws_create_eip: true
-sno_secondary_disk_device: "/dev/nvme1n1"
-metallb_ip_address_ranges:
-  - "10.0.1.100-10.0.1.110"
-EOF
-
-# 3. Deploy both clusters
-export KUBECONFIG=~/.kube/config
-export AWS_ACCESS_KEY_ID="your-access-key"
-export AWS_SECRET_ACCESS_KEY="your-secret-key"
-
-./ansible-runner.sh deploy --limit sno-cluster-01
-./ansible-runner.sh deployaws --limit sno-aws-01
-
-# 4. Wait for both installations
-
-# 5. Deploy operators to both clusters
-./ansible-runner.sh operators
-
-# 6. MetalLB will be configured with cluster-specific IP ranges
-
-# 7. Deploy application to both clusters
-./ansible-runner.sh deployapp
-
-# 8. Verify DR setup
-export KUBECONFIG=artifacts/sno-cluster-01/kubeconfig
-oc get pods -n quarkus-mysql-app
-
-export KUBECONFIG=artifacts/sno-aws-01/kubeconfig
-oc get pods -n quarkus-mysql-app
-```
-
-### Example 3: AWS-Only Deployment
-
-```bash
-# 1. Configure AWS cluster
-cat > inventory/host_vars/sno-aws-prod.yml <<EOF
-sno_cluster_name: "sno-aws-prod"
-sno_base_domain: "prod.example.com"
-aws_region: "us-west-2"
-aws_availability_zone: "us-west-2a"
-aws_instance_type: "m5.4xlarge"
-aws_ami_id: "ami-0fedcba9876543210"
-aws_vpc_id: "vpc-prod123456"
-aws_subnet_id: "subnet-prod78901"
-aws_security_group_id: "sg-prod23456"
-aws_key_name: "prod-keypair"
-aws_route53_zone: "prod.example.com"
-aws_create_eip: true
-sno_secondary_disk_device: "/dev/nvme1n1"
-sno_openshift_version: "4.20.2"
-EOF
-
-# 2. Set credentials
-export KUBECONFIG=~/.kube/hub-cluster-config
-export AWS_PROFILE="production"
-
-# 3. Deploy
-./ansible-runner.sh deployaws --limit sno-aws-prod
-
-# 4. Monitor EC2 instance
-aws ec2 describe-instances \
-  --filters "Name=tag:cluster,Values=sno-aws-prod" \
-  --region us-west-2 \
-  --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]'
-
-# 5. Access cluster after installation
-export KUBECONFIG=artifacts/sno-aws-prod/kubeconfig
-oc get nodes
-```
-
-## Security Considerations
-
-1. **Protect credentials**:
-   - Never commit `pull-secret.json` or `ssh-key.pub` to version control
-   - Use `.gitignore` for sensitive files
-   - Restrict access to `artifacts/` directory
-   - Rotate AWS credentials regularly
-
-2. **OpenShift token**:
-   - Use environment variables for tokens
-   - Rotate tokens regularly
-   - Use service accounts for automation
-
-3. **AWS security**:
-   - Use IAM roles instead of access keys when possible
-   - Implement least-privilege security groups
-   - Enable VPC Flow Logs for network monitoring
-   - Use AWS Secrets Manager for sensitive data
-   - Enable CloudTrail for API auditing
-
-4. **Network security**:
-   - Use NetworkPolicies to isolate SNO VM
-   - Configure proper firewall rules
-   - Use TLS for all communications
-   - Restrict MetalLB IP ranges to required addresses only
-
-## Why Podman-based?
-
-This automation uses Podman to run Ansible in a container, providing several benefits:
-
-1. **No Local Installation**: No need to install Ansible, Python packages, or collections on your system
-2. **Consistency**: Same environment across all users and systems
-3. **Isolation**: Dependencies don't conflict with system packages
-4. **Portability**: Works on any system with Podman/Docker
-5. **Easy Updates**: Rebuild the container to update dependencies
-
-## Troubleshooting
-
-### Podman Issues
-
-**Permission denied errors**:
-```bash
-# Run podman in rootless mode (default) or with sudo
-sudo ./ansible-runner.sh deploy
-```
-
-**SELinux issues with volume mounts**:
-- The `:Z` flag is used automatically for proper SELinux labeling
-- If issues persist, check `sudo ausearch -m avc -ts recent`
-
-**Image build fails**:
-```bash
-# Rebuild with no cache
-podman build --no-cache -t localhost/ansible-runner:latest -f Containerfile .
-```
-
-### Container environment
-
-**Need to debug inside the container**:
-```bash
-./ansible-runner.sh shell
-# Now you're inside the container
-ansible --version
-ls -la /workspace
-```
-
-## Support and Contributions
-
-For issues, questions, or contributions:
-- Review the OpenShift documentation: https://docs.openshift.com
-- Check OpenShift Virtualization docs: https://docs.openshift.com/container-platform/latest/virt/about-virt.html
-- Review Single Node OpenShift documentation
+- Never commit `pull-secret.json`, `ssh-key.pub`, `kubeconfig`, or `artifacts/`.
+- Prefer per-account AWS **named profiles** (or IAM roles) over long-lived keys in env
+  vars; rotate credentials regularly.
+- Restrict MetalLB ranges and security groups to the minimum required.
 
 ## License
 
-This automation is provided as-is for educational and operational purposes.
+Provided as-is for educational and operational purposes.

@@ -208,7 +208,7 @@ cp ~/.ssh/id_rsa.pub ./ssh-key.pub
 ## Step 6: Deploy Cluster
 
 ```bash
-./ansible-runner.sh deployaws --limit sno-aws-quickstart
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-quickstart
 ```
 
 This will take approximately 45-60 minutes.

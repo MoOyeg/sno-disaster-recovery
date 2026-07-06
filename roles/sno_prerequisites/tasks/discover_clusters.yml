@@ -1,0 +1,74 @@
+---
+# Discover SNO cluster kubeconfigs from BOTH credentials/ and artifacts/.
+#
+# AWS IPI (deploy-sno-aws.yml) writes credentials/<name>/auth/kubeconfig; the
+# OpenShift Virtualization flow and collect-artifacts write
+# artifacts/<name>/kubeconfig. Searching only one directory misses clusters
+# created by the other, so this discovers from whichever directories exist and
+# are non-empty.
+#
+# Sets:
+#   clusters_to_import         - unique list of cluster names found in either dir
+#   cluster_kubeconfig_by_name - map: cluster name -> chosen kubeconfig path,
+#                                preferring credentials/<name>/auth/kubeconfig,
+#                                then artifacts/<name>/kubeconfig, then any match.
+- name: Check which source directories exist (credentials/ and artifacts/)
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/{{ item }}"
+  register: _cluster_src_dirs
+  loop:
+    - credentials
+    - artifacts
+  delegate_to: localhost
+
+- name: Build list of existing source directories
+  ansible.builtin.set_fact:
+    kubeconfig_search_dirs: >-
+      {{ _cluster_src_dirs.results
+         | selectattr('stat.exists')
+         | selectattr('stat.isdir')
+         | map(attribute='stat.path') | list }}
+
+- name: Find all cluster kubeconfig files under those directories
+  ansible.builtin.find:
+    paths: "{{ kubeconfig_search_dirs }}"
+    patterns: "kubeconfig"
+    recurse: true
+    file_type: file
+  register: _found_kubeconfigs
+  delegate_to: localhost
+  when: kubeconfig_search_dirs | length > 0
+
+- name: Collect discovered kubeconfig paths
+  ansible.builtin.set_fact:
+    found_paths: "{{ (_found_kubeconfigs.files | default([])) | map(attribute='path') | list }}"
+
+- name: Build list of clusters discovered (from credentials/ or artifacts/)
+  ansible.builtin.set_fact:
+    clusters_to_import: >-
+      {{ found_paths
+         | map('regex_replace', '^.*/(?:credentials|artifacts)/([^/]+)/.*$', '\1')
+         | unique | list }}
+
+- name: Reset the per-cluster kubeconfig map
+  ansible.builtin.set_fact:
+    cluster_kubeconfig_by_name: {}
+
+- name: Resolve the preferred kubeconfig path for each cluster
+  ansible.builtin.set_fact:
+    cluster_kubeconfig_by_name: "{{ cluster_kubeconfig_by_name | combine({ item: _chosen }) }}"
+  vars:
+    _chosen: >-
+      {{ ((found_paths | select('search', '/credentials/' ~ item ~ '/auth/kubeconfig$') | list)
+          + (found_paths | select('search', '/artifacts/' ~ item ~ '/kubeconfig$') | list)
+          + (found_paths | select('search', '/' ~ item ~ '/(auth/)?kubeconfig$') | list)) | first }}
+  loop: "{{ clusters_to_import }}"
+  loop_control:
+    label: "{{ item }}"
+
+# Drop excluded clusters (e.g. the ACM hub) from the import list so the hub is
+# never imported/labelled as a DR workload cluster. cluster_kubeconfig_by_name
+# still retains them (harmless). Default [] = no exclusions.
+- name: Apply discovery exclusions
+  ansible.builtin.set_fact:
+    clusters_to_import: "{{ clusters_to_import | difference(discover_exclude_clusters | default([])) }}"

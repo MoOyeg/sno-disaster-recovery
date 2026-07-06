@@ -1,0 +1,31 @@
+---
+# AWS IPI hub cluster running Red Hat Advanced Cluster Management (ACM).
+# This is the management hub that imports/governs the sno1 and sno2 clusters.
+sno_cluster_name: "acm"
+
+# AWS account selection: named profile in ~/.aws/credentials ([acm] section).
+# Point this at whichever account should own the hub.
+aws_profile: "acm"
+
+# sno_base_domain is auto-discovered from Route53 in the [acm] account by
+# deploy-sno-aws.yml. Uncomment to pin it (must be a PUBLIC hosted zone there):
+# sno_base_domain: "sandbox-acm.opentlc.com"
+
+# AWS placement / sizing. An ACM hub needs more headroom than a plain SNO.
+aws_region: "us-east-2"
+aws_instance_type: "m6i.4xlarge"   # 16 vCPU / 64 GiB
+aws_root_volume_size: 200          # GiB
+
+# Pin to a single AZ so the installer creates just one NAT gateway (=1 Elastic IP).
+aws_zones:
+  - "us-east-2a"
+
+# Topology: single-node hub by default. Bump these for a multi-node hub if the
+# ACM workload needs it (the install-config template honours both).
+controlplane_replicas: 1
+compute_replicas: 0
+
+# OpenShift release matching the installed openshift-install binary
+sno_openshift_version: "4.22.0"
+
+ansible_connection: local

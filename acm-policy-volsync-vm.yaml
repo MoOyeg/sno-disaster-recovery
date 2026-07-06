@@ -1,8 +1,26 @@
 ---
+# VolSync failover/failback automation for the DR demo VirtualMachine.
+#
+# This is the VM analogue of acm-policy-volsync-automate.yaml (the Quarkus app):
+# same active/standby design driven by the app-role ManagedCluster label, but
+# every object is scoped to the vm-dr-demo namespace and the vm-data-pvc data
+# disk, and all names are prefixed vm- so the two stacks never collide.
+#
+#   * Standby clusters (app-role != active): run a ReplicationDestination that
+#     receives the replicated vm-data-pvc; the destination rsync-tls Service is
+#     published (LoadBalancer or, under Submariner, the clusterset address).
+#   * Active cluster (app-role=active): runs a ReplicationSource that pushes
+#     vm-data-pvc to the standby's discovered address.
+#   * On a label flip the wrong-role resource is deleted and recreated on the
+#     right cluster - but the delete is SKIPPED while a resource reports
+#     Synchronizing=True so an in-flight rsync is never torn down mid-transfer.
+#
+# NOTE: this is an ALTERNATIVE to acm-policy-volsync-automate.yaml. Deploy the
+# VM demo (deployvm) or the app demo (deployapp), not both at once.
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-source-hub-views
+  name: vm-vs-source-hub-views
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -16,7 +34,7 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: vs-source-create-views
+          name: vm-vs-source-create-views
         spec:
           remediationAction: enforce
           severity: low
@@ -28,15 +46,15 @@ spec:
                 apiVersion: view.open-cluster-management.io/v1beta1
                 kind: ManagedClusterView
                 metadata:
-                  name: volsync-dest-info-quarkus-web-app
+                  name: volsync-dest-info-vm-data
                   namespace: {{ $managedCluster.metadata.name }}
                   labels:
-                    app: volsync
+                    app: volsync-vm
                     volsync-role: destination-info
                 spec:
                   scope:
-                    name: quarkus-mysql-volsync-destination-standby
-                    namespace: quarkus-web-app
+                    name: vm-data-volsync-destination-standby
+                    namespace: vm-dr-demo
                     kind: ReplicationDestination
                     apiGroup: volsync.backube
                     version: v1alpha1
@@ -44,7 +62,7 @@ spec:
             {{- end }}
             {{- $mcvList := (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "" "").items }}
             {{- range $mcv := $mcvList }}
-            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") }}
+            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") (eq (index $mcv.metadata.labels "app") "volsync-vm") }}
             {{- $shouldDelete := true }}
             {{- range $managedCluster := (lookup "cluster.open-cluster-management.io/v1" "ManagedCluster" "" "").items }}
             {{- if and (ne (index $managedCluster.metadata.labels "name") "local-cluster") (ne (index $managedCluster.metadata.labels "app-role") "active") }}
@@ -63,12 +81,11 @@ spec:
                   namespace: {{ $mcv.metadata.namespace }}
             {{- end }}
             {{- end }}
-            {{- end }}
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-dest-info-hub
+  name: vm-vs-dest-info-hub
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -82,16 +99,16 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: vs-dest-info-configmap
+          name: vm-vs-dest-info-configmap
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{- $dr := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dr-config").data }}
+            {{- $dr := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dr-config-vm").data }}
             {{- $submariner := and $dr (eq ($dr.submarinerEnabled | default "false") "true") }}
             {{- $mcvList := (lookup "view.open-cluster-management.io/v1beta1" "ManagedClusterView" "" "").items }}
             {{- range $mcv := $mcvList }}
-            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") }}
+            {{- if and (index $mcv.metadata.labels "volsync-role") (eq (index $mcv.metadata.labels "volsync-role") "destination-info") (eq (index $mcv.metadata.labels "app") "volsync-vm") }}
             {{- if $mcv.status.result }}
             {{- $dest := $mcv.status.result }}
             {{- if or $submariner $dest.status.rsyncTLS.address }}
@@ -100,12 +117,9 @@ spec:
                 apiVersion: v1
                 kind: ConfigMap
                 metadata:
-                  name: volsync-dest-info-quarkus-web-app
+                  name: volsync-dest-info-vm-data
                   namespace: open-cluster-management-global-set
                 data:
-                  # Under Submariner the destination is reached at its exported
-                  # clusterset.local address; otherwise the LoadBalancer address
-                  # published in the ReplicationDestination status is used.
                   address: {{ if $submariner }}{{ $dr.address | quote }}{{ else }}{{ $dest.status.rsyncTLS.address | quote }}{{ end }}
                   keySecret: {{ $dest.spec.rsyncTLS.keySecret | quote }}
                   storageClassName: {{ $dest.spec.rsyncTLS.storageClassName | default "" | quote }}
@@ -118,7 +132,7 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-source-active
+  name: vm-vs-source-active
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -132,20 +146,20 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: vs-dest-info-configmap-copy
+          name: vm-vs-dest-info-configmap-copy
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{hub- $cm := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dest-info-quarkus-web-app") hub}}
+            {{hub- $cm := (lookup "v1" "ConfigMap" "open-cluster-management-global-set" "volsync-dest-info-vm-data") hub}}
             {{hub- if $cm hub}}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: v1
                 kind: ConfigMap
                 metadata:
-                  name: volsync-dest-info-quarkus-web-app
-                  namespace: quarkus-web-app
+                  name: volsync-dest-info-vm-data
+                  namespace: vm-dr-demo
                 data:
                   address: {{hub $cm.data.address | quote hub}}
                   keySecret: {{hub $cm.data.keySecret | quote hub}}
@@ -156,12 +170,12 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: vs-source-create-replicationsource
+          name: vm-vs-source-create-replicationsource
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{- $cm := (lookup "v1" "ConfigMap" "quarkus-web-app" "volsync-dest-info-quarkus-web-app") }}
+            {{- $cm := (lookup "v1" "ConfigMap" "vm-dr-demo" "volsync-dest-info-vm-data") }}
             {{- if and $cm $cm.data }}
             {{- if $cm.data.address }}
             - complianceType: musthave
@@ -169,10 +183,10 @@ spec:
                 apiVersion: volsync.backube/v1alpha1
                 kind: ReplicationSource
                 metadata:
-                  name: volsync-source-info-quarkus-web-app
-                  namespace: quarkus-web-app
+                  name: volsync-source-vm-data-pvc
+                  namespace: vm-dr-demo
                 spec:
-                  sourcePVC: mysql-pvc
+                  sourcePVC: vm-data-pvc
                   trigger:
                     schedule: "*/5 * * * *"
                   rsyncTLS:
@@ -191,7 +205,7 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-dest-active-del
+  name: vm-vs-dest-active-del
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -205,18 +219,17 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: volsync-destination-delete-active
+          name: vm-volsync-destination-delete-active
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{- range $volsyncdest := (lookup "volsync.backube/v1alpha1" "ReplicationDestination" "" "").items }}
+            {{- range $volsyncdest := (lookup "volsync.backube/v1alpha1" "ReplicationDestination" "vm-dr-demo" "").items }}
             {{- /* Do not delete a destination while VolSync is mid-transfer; a
                    Synchronizing=True condition means an rsync is landing on this
                    receive endpoint and tearing it down would abort the in-flight
-                   session (the peer source is guarded the same way). The policy
-                   re-evaluates on its interval, so the destination is removed on
-                   a later pass once the sync completes. */}}
+                   session. The policy re-evaluates on its interval, so it is
+                   removed on a later pass once the sync completes. */}}
             {{- $syncing := false }}
             {{- if $volsyncdest.status }}
             {{- range $cond := ($volsyncdest.status.conditions | default list) }}
@@ -239,7 +252,7 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-source-standby-del
+  name: vm-vs-source-standby-del
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -253,12 +266,12 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: volsync-replicationsource-delete-standby
+          name: vm-volsync-replicationsource-delete-standby
         spec:
           remediationAction: enforce
           severity: low
           object-templates-raw: |
-            {{- range $volsyncsrc := (lookup "volsync.backube/v1alpha1" "ReplicationSource" "" "").items }}
+            {{- range $volsyncsrc := (lookup "volsync.backube/v1alpha1" "ReplicationSource" "vm-dr-demo" "").items }}
             {{- /* Do not delete a source while VolSync is mid-transfer; a
                    Synchronizing=True / SyncInProgress condition means an rsync
                    is in flight and tearing it down could corrupt the standby
@@ -286,7 +299,7 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
-  name: vs-dest-standby
+  name: vm-vs-dest-standby
   namespace: open-cluster-management-global-set
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
@@ -300,12 +313,12 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: volsync-destination-pvc-standby
+          name: vm-volsync-destination-pvc-standby
         spec:
           remediationAction: enforce
           severity: low
-          # serviceType + storage classes come from the hub volsync-dr-config
-          # ConfigMap (written by deployapp). Under Submariner: ClusterIP (the
+          # serviceType + storage classes come from the hub volsync-dr-config-vm
+          # ConfigMap (written by deployvm). Under Submariner: ClusterIP (the
           # service is exported across the clusterset); otherwise LoadBalancer.
           object-templates-raw: |
             - complianceType: musthave
@@ -313,107 +326,107 @@ spec:
                 apiVersion: volsync.backube/v1alpha1
                 kind: ReplicationDestination
                 metadata:
-                  name: quarkus-mysql-volsync-destination-standby
-                  namespace: quarkus-web-app
+                  name: vm-data-volsync-destination-standby
+                  namespace: vm-dr-demo
                 spec:
                   trigger:
                     schedule: "*/2 * * * *"
                   rsyncTLS:
-                    serviceType: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "serviceType" hub}}'
+                    serviceType: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config-vm" "serviceType" hub}}'
                     copyMethod: Snapshot
-                    destinationPVC: mysql-pvc
-                    storageClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "storageClassName" hub}}'
-                    keySecret: volsync-rsync-tls-mysql-replicationsource
-                    volumeSnapshotClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config" "volumeSnapshotClassName" hub}}'
+                    destinationPVC: vm-data-pvc
+                    storageClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config-vm" "storageClassName" hub}}'
+                    keySecret: volsync-rsync-tls-vm-data-pvc
+                    volumeSnapshotClassName: '{{hub fromConfigMap "open-cluster-management-global-set" "volsync-dr-config-vm" "volumeSnapshotClassName" hub}}'
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-source-hub-views
+  name: binding-vm-vs-source-hub-views
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-hub
+  name: vm-placement-hub
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-source-hub-views
+  - name: vm-vs-source-hub-views
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-dest-info-hub
+  name: binding-vm-vs-dest-info-hub
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-hub
+  name: vm-placement-hub
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-dest-info-hub
+  - name: vm-vs-dest-info-hub
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-dest-active-del
+  name: binding-vm-vs-dest-active-del
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-active
+  name: vm-placement-active
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-dest-active-del
+  - name: vm-vs-dest-active-del
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-source-active
+  name: binding-vm-vs-source-active
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-active
+  name: vm-placement-active
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-source-active
+  - name: vm-vs-source-active
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-source-standby-del
+  name: binding-vm-vs-source-standby-del
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-standby
+  name: vm-placement-standby
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-source-standby-del
+  - name: vm-vs-source-standby-del
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: binding-vs-dest-standby
+  name: binding-vm-vs-dest-standby
   namespace: open-cluster-management-global-set
 placementRef:
-  name: sno-app-placement-standby
+  name: vm-placement-standby
   kind: Placement
   apiGroup: cluster.open-cluster-management.io
 subjects:
-  - name: vs-dest-standby
+  - name: vm-vs-dest-standby
     kind: Policy
     apiGroup: policy.open-cluster-management.io
 ---
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: sno-app-placement-hub
+  name: vm-placement-hub
   namespace: open-cluster-management-global-set
 spec:
   predicates:
@@ -428,7 +441,7 @@ spec:
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: sno-app-placement-active
+  name: vm-placement-active
   namespace: open-cluster-management-global-set
 spec:
   clusterSets:
@@ -445,7 +458,7 @@ spec:
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: sno-app-placement-standby
+  name: vm-placement-standby
   namespace: open-cluster-management-global-set
 spec:
   clusterSets:
@@ -462,7 +475,7 @@ spec:
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: sno-app-placement-active
+  name: vm-placement-active
   namespace: openshift-gitops
 spec:
   clusterSets:
@@ -479,7 +492,7 @@ spec:
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: sno-app-placement-standby
+  name: vm-placement-standby
   namespace: openshift-gitops
 spec:
   clusterSets:

@@ -4,3 +4,13 @@ localhost ansible_connection=local
 [sno_clusters]
 sno-cluster2
 sno-cluster
+
+# AWS IPI clusters (deployed via deploy-sno-aws.yml).
+# Each host picks its AWS account via `aws_profile` in its host_vars file
+# (a named profile in ~/.aws/credentials). Deploy a subset with --limit, e.g.:
+#   ansible-playbook deploy-sno-aws.yml --limit acm-hub
+#   ansible-playbook deploy-sno-aws.yml --limit 'sno-aws-1,sno-aws-2'
+[sno_aws_clusters]
+acm-hub
+sno-aws-1
+sno-aws-2

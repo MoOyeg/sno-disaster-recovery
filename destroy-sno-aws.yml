@@ -1,0 +1,74 @@
+---
+# Destroy a Single Node OpenShift on AWS cluster created by deploy-sno-aws.yml.
+#
+# The installer removes everything it provisioned (EC2 instance, VPC, subnets,
+# security groups, load balancers, and the Route53 records) using the state it
+# left behind in credentials/<cluster>/metadata.json.
+#
+# Requirements (same as deploy-sno-aws.yml):
+#   - openshift-install binary on PATH
+#   - AWS credentials (env AWS_ACCESS_KEY_ID/SECRET or AWS_PROFILE, or ~/.aws/credentials)
+#
+# Run on the host (NOT through the ansible-runner container, which has no
+# openshift-install / aws CLI). Use ./ansible-runner.sh aws-destroy, or:
+#   ansible-playbook -i inventory/hosts destroy-sno-aws.yml --limit sno-aws-1
+- name: Destroy Single Node OpenShift on AWS (IPI)
+  hosts: sno_aws_clusters
+  gather_facts: false
+  vars:
+    install_dir: "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}"
+    artifacts_dir: "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}"
+
+    # Same AWS environment resolution as the deploy playbook: a per-host
+    # aws_profile selects the account's named profile from ~/.aws/credentials,
+    # and the region is always pinned so the installer targets the right account.
+    aws_env: >-
+      {{
+        (({'AWS_PROFILE': aws_profile} if (aws_profile | default('')) | length > 0 else {})
+          | combine({'AWS_REGION': aws_region, 'AWS_DEFAULT_REGION': aws_region}))
+      }}
+
+  tasks:
+    - name: Verify openshift-install is available
+      ansible.builtin.command: openshift-install version
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Check for cluster state (metadata.json)
+      ansible.builtin.stat:
+        path: "{{ install_dir }}/metadata.json"
+      register: cluster_metadata
+      delegate_to: localhost
+
+    - name: Skip clusters with no state to destroy
+      ansible.builtin.debug:
+        msg: >-
+          No {{ install_dir }}/metadata.json found for '{{ sno_cluster_name }}' -
+          nothing to destroy (already removed, or never deployed from this checkout).
+      when: not cluster_metadata.stat.exists
+
+    - name: Destroy the cluster
+      when: cluster_metadata.stat.exists
+      block:
+        - name: Run openshift-install destroy cluster (~10-15 min per cluster)
+          ansible.builtin.command:
+            cmd: "openshift-install destroy cluster --dir {{ install_dir }} --log-level=info"
+          environment: "{{ aws_env }}"
+          async: 1800   # 30 min ceiling
+          poll: 30
+          delegate_to: localhost
+
+        - name: Remove the install directory (state + generated assets)
+          ansible.builtin.file:
+            path: "{{ install_dir }}"
+            state: absent
+          delegate_to: localhost
+
+        - name: Teardown summary
+          ansible.builtin.debug:
+            msg:
+              - "=========================================="
+              - "SNO on AWS destroyed: {{ sno_cluster_name }}"
+              - "Removed install dir: {{ install_dir }}"
+              - "Artifacts kept at:   {{ artifacts_dir }} (delete manually if desired)"
+              - "=========================================="

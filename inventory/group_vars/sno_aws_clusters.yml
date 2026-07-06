@@ -1,0 +1,22 @@
+---
+# Defaults for AWS IPI SNO clusters. Override per-cluster in host_vars/<host>.yml.
+
+# Blank the global placeholder from group_vars/all.yml ("example.com") so the
+# playbook auto-discovers the base domain from Route53. Set a value here or in
+# host_vars to pin it explicitly and skip discovery.
+sno_base_domain: ""
+
+aws_region: "us-east-2"
+aws_instance_type: "m6i.2xlarge"   # 8 vCPU / 32 GiB - SNO minimum
+aws_root_volume_size: 120          # GiB
+
+# AWS account selection. Set `aws_profile` per host (host_vars) to the name of a
+# section in ~/.aws/credentials so each cluster installs into its own account.
+# Empty here = fall back to ambient credentials (AWS_ACCESS_KEY_ID / AWS_PROFILE
+# env vars or the [default] profile) when a host does not set one.
+aws_profile: ""
+
+# Cluster topology. Defaults give a single-node (SNO) cluster; override per host
+# to build a multi-node cluster (e.g. a larger ACM hub).
+controlplane_replicas: 1
+compute_replicas: 0

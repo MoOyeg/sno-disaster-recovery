@@ -1,0 +1,52 @@
+---
+# Install OpenShift Virtualization (CNV) on the SNO managed clusters so the VM
+# DR example (deployvm) can run. Discovers cluster kubeconfigs from credentials/
+# and artifacts/ (same as acmimport/operators) and installs CNV on each cluster
+# EXCEPT the ACM hub.
+#
+# Run:  ./ansible-runner.sh deploycnv
+#       ./ansible-runner.sh deploycnv -e 'cnv_exclude_clusters=["acm"]'
+#
+# Note: on AWS the target clusters must be bare-metal instances (KubeVirt cannot
+# run VMs on non-metal EC2). This is a prerequisite for deployvm.
+- name: Install OpenShift Virtualization on SNO clusters
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Clusters to skip (the ACM hub does not host the DR VM).
+    cnv_exclude_clusters:
+      - acm
+
+  tasks:
+    - name: Discover cluster kubeconfigs (credentials/ and artifacts/)
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: discover_clusters
+
+    - name: Select CNV target clusters (all discovered except the hub)
+      ansible.builtin.set_fact:
+        cnv_targets: "{{ clusters_to_import | difference(cnv_exclude_clusters) }}"
+
+    - name: Fail if no target clusters found
+      ansible.builtin.fail:
+        msg: "No SNO clusters found to install CNV on (after excluding {{ cnv_exclude_clusters }}). Deploy/import clusters first."
+      when: cnv_targets | length == 0
+
+    - name: Show CNV targets
+      ansible.builtin.debug:
+        msg: "Installing OpenShift Virtualization on: {{ cnv_targets | join(', ') }}"
+
+    - name: Install CNV on each SNO cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: install_cnv
+      vars:
+        cnv_cluster_name: "{{ item }}"
+        cnv_auth:
+          kubeconfig: "{{ cluster_kubeconfig_by_name[item] }}"
+          validate_certs: false
+      loop: "{{ cnv_targets }}"
+      loop_control:
+        label: "{{ item }}"

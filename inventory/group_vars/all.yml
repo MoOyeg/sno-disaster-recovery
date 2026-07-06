@@ -77,7 +77,7 @@ sno_vm_dns_servers:
 sno_vm_mac_address: ""
 
 # OpenShift Installation Configuration
-sno_openshift_version: "4.20.2"
+sno_openshift_version: "4.22.4"
 sno_pull_secret_file: "{{ playbook_dir }}/pull-secret.json"
 sno_ssh_public_key_file: "{{ playbook_dir }}/ssh-key.pub"
 
@@ -113,3 +113,62 @@ acm_clusterset: "default"  # ManagedClusterSet to assign cluster to
 # Define IP address ranges for MetalLB load balancer
 # Override in host_vars for cluster-specific IP ranges
 metallb_ip_address_ranges: []  # e.g., ["192.168.102.246-192.168.102.254"]
+
+# ---------------------------------------------------------------------------
+# Submariner (inter-cluster connectivity for cross-cluster DR)
+# ---------------------------------------------------------------------------
+# Deployed by acm-deploy-infrastructure.yml (`./ansible-runner.sh operators`)
+# via the ACM submariner-addon: a Broker on the hub plus, per managed cluster,
+# a SubmarinerConfig (drives AWS cloud-prepare) and a ManagedClusterAddOn that
+# installs the Submariner operator/gateway and joins the cluster to the broker.
+#
+# Master toggle. When false, Submariner is never configured.
+submariner_enabled: true
+
+# Submariner is only set up when it is actually needed for inter-cluster
+# traffic, i.e. when MetalLB is NOT used at all (e.g. AWS clusters) OR the
+# per-cluster MetalLB IP ranges are on different subnets. When MetalLB is used
+# with a shared subnet across clusters, LoadBalancer IPs are directly routable
+# and Submariner is skipped. Computed at run time as `submariner_required`.
+
+# ManagedClusterSet whose members are joined to the Submariner broker. Matches
+# the clusterset the import step labels clusters with (sno-demo).
+submariner_clusterset: "sno-demo"
+
+# Enable Globalnet. REQUIRED when managed clusters share pod/service CIDRs, which
+# is the case for two default OpenShift IPI installs (sno1/sno2 both use
+# 10.128.0.0/14 pods + 172.30.0.0/16 services). Leave true unless every linked
+# cluster has non-overlapping CIDRs.
+submariner_globalnet_enabled: true
+
+# AWS gateway node instance type created by SubmarinerConfig cloud-prepare, and
+# the IPsec NAT-T UDP port it opens in the cluster security groups.
+submariner_aws_instance_type: "m5n.large"
+submariner_nattport: 4500
+
+# AWS shared credentials file used to build the per-cluster SubmarinerConfig
+# credentialsSecret (cloud-prepare needs AWS keys to open ports + create the
+# gateway). The section is each managed cluster's `aws_profile` (host_vars).
+aws_shared_credentials_file: "{{ lookup('env', 'HOME') }}/.aws/credentials"
+
+# Route VolSync DR replication over the Submariner link by exporting the
+# ReplicationDestination service across the clusterset (ServiceExport) and
+# addressing it via <svc>.<ns>.svc.clusterset.local instead of a public
+# LoadBalancer. Requires submariner_enabled. Consumed by
+# acm-deploy-application.yml (`deployapp`) via the hub `volsync-dr-config`
+# ConfigMap that the DR policies (acm-policy-volsync-automate.yaml) read.
+volsync_use_submariner: true
+
+# Storage for the VolSync ReplicationDestination (standby PVC + snapshots).
+# Defaults target AWS SNO (EBS CSI): gp3-csi + csi-aws-vsc. For the on-prem
+# virt clusters set these to the LVM StorageClass (e.g. lvms-vg1) instead.
+volsync_storage_class: "gp3-csi"
+volsync_snapshot_class: "csi-aws-vsc"
+
+# Red Hat Advanced Cluster Management (ACM) hub install. `operators` installs
+# ACM on the acm-hub cluster only (using its own kubeconfig) when a
+# MultiClusterHub is not already present. Leave acm_channel empty to auto-detect
+# the operator's default channel from its PackageManifest; pin it to force a
+# specific release (e.g. "release-2.14").
+acm_operator_namespace: "open-cluster-management"
+acm_channel: ""

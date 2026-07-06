@@ -1,0 +1,121 @@
+---
+# Install OpenShift Virtualization (CNV / kubevirt-hyperconverged) on ONE cluster.
+#
+# Expects:
+#   cnv_auth         - k8s auth dict for the target cluster, e.g. {kubeconfig: <path>}
+#   cnv_cluster_name - display name for logging
+#
+# Idempotent: if a HyperConverged already exists it only waits for readiness.
+- name: "[{{ cnv_cluster_name }}] Check for an existing HyperConverged"
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    namespace: openshift-cnv
+  args: "{{ cnv_auth }}"
+  register: _hco
+  failed_when: false
+
+- name: "[{{ cnv_cluster_name }}] Install the OpenShift Virtualization operator"
+  when: (_hco.resources | default([])) | length == 0
+  block:
+    - name: "[{{ cnv_cluster_name }}] Create the openshift-cnv namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: openshift-cnv
+      args: "{{ cnv_auth }}"
+
+    - name: "[{{ cnv_cluster_name }}] Create the CNV OperatorGroup"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            name: kubevirt-hyperconverged-group
+            namespace: openshift-cnv
+          spec:
+            targetNamespaces:
+              - openshift-cnv
+      args: "{{ cnv_auth }}"
+
+    - name: "[{{ cnv_cluster_name }}] Detect CNV operator default channel"
+      kubernetes.core.k8s_info:
+        api_version: packages.operators.coreos.com/v1
+        kind: PackageManifest
+        name: kubevirt-hyperconverged
+        namespace: openshift-marketplace
+      args: "{{ cnv_auth }}"
+      register: _cnv_pkg
+      failed_when: false
+
+    - name: "[{{ cnv_cluster_name }}] Resolve subscription channel"
+      ansible.builtin.set_fact:
+        _cnv_channel: >-
+          {{ cnv_channel if (cnv_channel | default('')) | length > 0
+             else (_cnv_pkg.resources[0].status.defaultChannel
+                   if _cnv_pkg.resources | default([]) | length > 0 else 'stable') }}
+
+    - name: "[{{ cnv_cluster_name }}] Create the CNV Subscription"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: hco-operatorhub
+            namespace: openshift-cnv
+          spec:
+            channel: "{{ _cnv_channel }}"
+            installPlanApproval: Automatic
+            name: kubevirt-hyperconverged
+            source: redhat-operators
+            sourceNamespace: openshift-marketplace
+      args: "{{ cnv_auth }}"
+
+    - name: "[{{ cnv_cluster_name }}] Wait for the CNV operator CSV to succeed"
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: openshift-cnv
+      args: "{{ cnv_auth }}"
+      register: _cnv_csv
+      until: >-
+        _cnv_csv.resources | default([])
+        | selectattr('metadata.name', 'match', '^kubevirt-hyperconverged-operator')
+        | selectattr('status.phase', 'defined')
+        | selectattr('status.phase', 'equalto', 'Succeeded')
+        | list | length > 0
+      retries: 40
+      delay: 15
+
+    - name: "[{{ cnv_cluster_name }}] Create the HyperConverged operand"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: hco.kubevirt.io/v1beta1
+          kind: HyperConverged
+          metadata:
+            name: kubevirt-hyperconverged
+            namespace: openshift-cnv
+          spec: {}
+      args: "{{ cnv_auth }}"
+
+- name: "[{{ cnv_cluster_name }}] Wait for HyperConverged to be Available (up to ~20 min)"
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: openshift-cnv
+  args: "{{ cnv_auth }}"
+  register: _hco_ready
+  until: >-
+    _hco_ready.resources | default([]) | length > 0 and
+    (_hco_ready.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Available')
+     | selectattr('status', 'equalto', 'True') | list | length > 0)
+  retries: 80
+  delay: 15

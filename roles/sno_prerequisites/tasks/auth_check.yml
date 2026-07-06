@@ -11,17 +11,31 @@
     - "{{ playbook_dir }}/kubeconfig"
   when: item != ''
 
-- name: Set kubeconfig path from discovered file
+# Pick the FIRST kubeconfig that exists, in priority order:
+#   1. $KUBECONFIG  2. ~/.kube/config  3. ./kubeconfig
+# (The loop above preserves that order.) This must be first-match-wins so an
+# explicit KUBECONFIG is honoured and a stale ./kubeconfig cannot silently
+# shadow it.
+- name: Select the first existing kubeconfig (KUBECONFIG > ~/.kube/config > ./kubeconfig)
   ansible.builtin.set_fact:
-    openshift_kubeconfig: "{{ item.stat.path }}"
+    openshift_kubeconfig: "{{ _existing_kubeconfigs | first }}"
     openshift_use_kubeconfig: true
-  loop: "{{ kubeconfig_check.results }}"
+  vars:
+    _existing_kubeconfigs: >-
+      {{ kubeconfig_check.results
+         | rejectattr('skipped', 'defined')
+         | selectattr('stat.exists')
+         | map(attribute='stat.path') | list }}
   when:
     - kubeconfig_check.results is defined
-    - item.stat is defined
-    - item.stat.exists | default(false)
-  loop_control:
-    label: "{{ item.stat.path | default('N/A') }}"
+    - (kubeconfig_check.results
+        | rejectattr('skipped', 'defined')
+        | selectattr('stat.exists') | list | length) > 0
+
+- name: Show which kubeconfig was selected
+  ansible.builtin.debug:
+    msg: "Selected kubeconfig: {{ openshift_kubeconfig }}"
+  when: openshift_kubeconfig | default('') != ''
 
 - name: Check if using kubeconfig authentication
   ansible.builtin.set_fact:

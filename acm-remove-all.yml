@@ -20,11 +20,11 @@
     
     - name: Display ACM status
       ansible.builtin.debug:
-        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
-    
+        msg: "ACM {{ 'is installed' if (acm_check.resources | default([])) | length > 0 else 'is NOT installed' }}"
+
     - name: Skip removal if ACM is not installed
       ansible.builtin.meta: end_play
-      when: acm_check.resources | length == 0
+      when: (acm_check.resources | default([])) | length == 0
     
     - name: Get all ManagedClusters in sno-demo clusterset
       kubernetes.core.k8s_info:

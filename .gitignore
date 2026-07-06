@@ -38,3 +38,6 @@ Thumbs.db
 app/target/*
 inventory/host_vars/sno-cluster2.yml
 inventory/host_vars/sno-cluster.yml
+
+# Local hub kubeconfig (secret)
+/kubeconfig
