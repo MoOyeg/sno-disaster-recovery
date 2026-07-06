@@ -1,0 +1,21 @@
+---
+# Persistent data disk for the DR demo VM. Deployed to EVERY SNO cluster (via
+# the vm-data-pvc-appset ApplicationSet), mirroring how mysql-pvc is present on
+# all clusters. On the active cluster the VM attaches and writes to it; on the
+# standby clusters the VolSync ReplicationDestination writes replicated data
+# into it. Leave storageClassName unset to use the cluster default — it must be
+# a CSI class whose provisioner has a matching VolumeSnapshotClass (VolSync
+# copyMethod: Snapshot), consistent with volsync_storage_class / _snapshot_class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-data-pvc
+  namespace: vm-dr-demo
+  labels:
+    app: fedora-dr-vm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

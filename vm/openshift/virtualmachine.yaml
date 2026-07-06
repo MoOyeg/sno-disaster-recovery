@@ -1,0 +1,114 @@
+---
+# DR demo VirtualMachine.
+#
+# The VM boots from a self-contained public Fedora containerDisk (the
+# "stateless" part, re-provided on every cluster) and attaches a persistent
+# data disk backed by the vm-data-pvc PVC (the "stateful" part that VolSync
+# replicates between clusters). cloud-init formats the data disk on first use,
+# mounts it, and appends a timestamped heartbeat every minute — that heartbeat
+# log is the data we verify survived a failover.
+#
+# Analogous to the Quarkus app: the VM is scheduled to the ACTIVE cluster only
+# (by the fedora-vm-appset ApplicationSet), while vm-data-pvc exists on every
+# cluster and is kept in sync by the VolSync ACM policies.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: fedora-dr-vm
+  namespace: vm-dr-demo
+  labels:
+    app: fedora-dr-vm
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        app: fedora-dr-vm
+        kubevirt.io/vm: fedora-dr-vm
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        memory:
+          guest: 2Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: datadisk
+              serial: datadisk        # -> /dev/disk/by-id/virtio-datadisk in guest
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+          rng: {}
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: rootdisk
+          containerDisk:
+            image: quay.io/containerdisks/fedora:41
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: vm-data-pvc
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |-
+              #cloud-config
+              user: fedora
+              password: fedora
+              chpasswd:
+                expire: false
+              write_files:
+                - path: /usr/local/bin/dr-datadisk-init.sh
+                  permissions: '0755'
+                  content: |
+                    #!/bin/bash
+                    # Format the replicated data disk on first use only (never
+                    # reformat a disk that already carries replicated data), then
+                    # mount it at /mnt/data.
+                    set -euo pipefail
+                    DEV=/dev/disk/by-id/virtio-datadisk
+                    MNT=/mnt/data
+                    for i in $(seq 1 30); do [ -b "$DEV" ] && break; sleep 2; done
+                    mkdir -p "$MNT"
+                    if ! blkid "$DEV" >/dev/null 2>&1; then
+                      mkfs.ext4 -F -L vmdata "$DEV"
+                    fi
+                    grep -q "$MNT" /etc/fstab || echo "LABEL=vmdata $MNT ext4 defaults 0 2" >> /etc/fstab
+                    mount "$MNT" 2>/dev/null || mount "$DEV" "$MNT"
+                    echo "$(date -u +%FT%TZ) BOOT on $(hostname)" >> "$MNT/heartbeat.log"
+                - path: /usr/local/bin/dr-heartbeat.sh
+                  permissions: '0755'
+                  content: |
+                    #!/bin/bash
+                    # Append a timestamped heartbeat line to the replicated disk.
+                    echo "$(date -u +%FT%TZ) heartbeat on $(hostname)" >> /mnt/data/heartbeat.log
+                - path: /etc/systemd/system/dr-heartbeat.service
+                  content: |
+                    [Unit]
+                    Description=DR demo heartbeat to replicated data disk
+                    After=local-fs.target
+                    [Service]
+                    Type=oneshot
+                    ExecStart=/usr/local/bin/dr-heartbeat.sh
+                - path: /etc/systemd/system/dr-heartbeat.timer
+                  content: |
+                    [Unit]
+                    Description=Run DR demo heartbeat every minute
+                    [Timer]
+                    OnBootSec=60
+                    OnUnitActiveSec=60
+                    [Install]
+                    WantedBy=timers.target
+              runcmd:
+                - /usr/local/bin/dr-datadisk-init.sh
+                - systemctl daemon-reload
+                - systemctl enable --now dr-heartbeat.timer
