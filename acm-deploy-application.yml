@@ -8,7 +8,7 @@
     acm_namespace: "open-cluster-management"
     application_namespace: "quarkus-web-app"
     git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
-    git_repo_branch: "automated"
+    git_repo_branch: "main"
     git_repo_path: "app/openshift"
     argo_project: "default"
     # VolSync ReplicationDestination (standby) and the rsync-tls Service that

@@ -19,13 +19,13 @@ the workflow is identical** regardless of where they run.
 
 Repo provides support for 2 infrastructure types:
 
-| | OpenShift Virtualization | AWS IPI |
+| | AWS IPI | OpenShift Virtualization |
 |---|---|---|
-| **Command** | `./ansible-runner.sh deploy` | `./ansible-runner.sh aws-deploy` |
-| **Where it runs** | Ansible **in a Podman container** | Ansible **directly on the host** |
-| **Needs a kubeconfig?** | **Yes** — builds VMs on an *existing* hub OCP cluster | **No** — `openshift-install` creates the cluster from scratch |
-| **Key tooling** | Podman + `oc` / k8s modules (in the image) | `openshift-install` + `aws` CLI + `~/.aws` (on the host) |
-| **Playbook** | `deploy-sno.yml` | `deploy-sno-aws.yml` |
+| **Command** | `./ansible-runner.sh aws-deploy` | `./ansible-runner.sh deploy` |
+| **Where it runs** | Ansible **directly on the host** | Ansible **in a Podman container** |
+| **Needs a kubeconfig?** | **No** — `openshift-install` creates the cluster from scratch | **Yes** — builds VMs on an *existing* hub OCP cluster |
+| **Key tooling** | `openshift-install` + `aws` CLI + `~/.aws` (on the host) | Podman + `oc` / k8s modules (in the image) |
+| **Playbook** | `deploy-sno-aws.yml` | `deploy-sno.yml` |
 
 > **Why the split?** The container-based flow (`build`/`deploy`/`destroy`) exists to
 > create SNO **VMs on top of an OpenShift cluster you already have** — so it mounts a
@@ -41,9 +41,9 @@ After the clusters are up, the **common** commands (`acmimport`, `operators`,
 ```
 ┌─ Create infrastructure (pick per cluster) ─────────────────────────────┐
 │                                                                        │
-│   OpenShift Virtualization          AWS IPI                            │
-│   ./ansible-runner.sh deploy        ./ansible-runner.sh aws-deploy     │
-│   (container, needs hub kubeconfig) (host, needs aws creds)            │
+│   AWS IPI                           OpenShift Virtualization           │
+│   ./ansible-runner.sh aws-deploy    ./ansible-runner.sh deploy         │
+│   (host, needs aws creds)           (container, needs hub kubeconfig)  │
 │                                                                        │
 └───────────────────────────────┬────────────────────────────────────────┘
                                 │  clusters now exist + imported to ACM
@@ -117,38 +117,7 @@ aws_secret_access_key = ...
 You need **two** SNO clusters. Create each one with whichever flow fits — they can be
 on different platforms.
 
-### Option A — OpenShift Virtualization (container flow)
-
-Define the cluster(s) in `inventory/host_vars/<name>.yml` and list them in the
-`[sno_clusters]` group in `inventory/hosts`:
-
-```yaml
-# inventory/host_vars/sno-cluster-01.yml
-sno_cluster_name: "sno-cluster-01"
-sno_base_domain: "lab.example.com"
-sno_vm_cores: 16
-sno_vm_memory: "64Gi"
-sno_vm_disk_size: "120Gi"
-sno_storage_class: "ocs-storagecluster-ceph-rbd"
-metallb_ip_address_ranges:
-  - "192.168.1.100-192.168.1.110"
-```
-
-```bash
-# One-time: build the Ansible container image
-./setup.sh                                  # or: ./ansible-runner.sh build
-
-# Point at the EXISTING hub cluster the VMs run on
-export KUBECONFIG=~/.kube/config
-
-# Deploy (30–60 min per cluster). --limit picks a single host.
-./ansible-runner.sh deploy --limit sno-cluster-01
-```
-
-Credentials for each finished cluster land in `artifacts/<cluster-name>/`
-(`kubeconfig`, `kubeadmin-password`, `cluster-info.txt`).
-
-### Option B — AWS IPI (host flow)
+### Option A — AWS IPI (host flow)
 
 Define the cluster(s) in `inventory/host_vars/<name>.yml` and list them in the
 `[sno_aws_clusters]` group in `inventory/hosts`:
@@ -178,6 +147,37 @@ Route53 records). Credentials also land in `artifacts/<cluster-name>/`.
 > the container has no `openshift-install`/`aws` CLI and no `~/.aws` mount, and there
 > is no pre-existing cluster to authenticate to. Use `aws-deploy` (the runner blocks
 > the container path with an explanatory error).
+
+### Option B — OpenShift Virtualization (container flow)
+
+Define the cluster(s) in `inventory/host_vars/<name>.yml` and list them in the
+`[sno_clusters]` group in `inventory/hosts`:
+
+```yaml
+# inventory/host_vars/sno-cluster-01.yml
+sno_cluster_name: "sno-cluster-01"
+sno_base_domain: "lab.example.com"
+sno_vm_cores: 16
+sno_vm_memory: "64Gi"
+sno_vm_disk_size: "120Gi"
+sno_storage_class: "ocs-storagecluster-ceph-rbd"
+metallb_ip_address_ranges:
+  - "192.168.1.100-192.168.1.110"
+```
+
+```bash
+# One-time: build the Ansible container image
+./setup.sh                                  # or: ./ansible-runner.sh build
+
+# Point at the EXISTING hub cluster the VMs run on
+export KUBECONFIG=~/.kube/config
+
+# Deploy (30–60 min per cluster). --limit picks a single host.
+./ansible-runner.sh deploy --limit sno-cluster-01
+```
+
+Credentials for each finished cluster land in `artifacts/<cluster-name>/`
+(`kubeconfig`, `kubeadmin-password`, `cluster-info.txt`).
 
 ### Verify the clusters
 

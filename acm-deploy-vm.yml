@@ -25,7 +25,7 @@
     vm_namespace: "vm-dr-demo"
     policy_namespace: "vm-dr-policies"
     git_repo_url: "https://github.com/MoOyeg/sno-disaster-recovery"
-    git_repo_branch: "automated"
+    git_repo_branch: "main"
     vm_git_path: "vm/openshift"
     pvc_git_path: "vm/pvc"
     volsync_key_secret: "volsync-rsync-tls-vm-data-pvc"
