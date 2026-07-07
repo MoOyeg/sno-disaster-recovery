@@ -1,0 +1,44 @@
+apiVersion: v1
+baseDomain: {{ sno_base_domain }}
+metadata:
+  name: {{ sno_cluster_name }}
+controlPlane:
+  name: master
+  replicas: {{ controlplane_replicas | default(1) }}
+  platform:
+    aws:
+      type: {{ aws_instance_type }}
+      rootVolume:
+        size: {{ aws_root_volume_size | default(120) }}
+        type: gp3
+{% if aws_zones | default([]) | length > 0 %}
+      zones:
+{% for z in aws_zones %}
+        - {{ z }}
+{% endfor %}
+{% endif %}
+compute:
+  - name: worker
+    replicas: {{ compute_replicas | default(0) }}
+{% if aws_zones | default([]) | length > 0 %}
+    platform:
+      aws:
+        zones:
+{% for z in aws_zones %}
+          - {{ z }}
+{% endfor %}
+{% endif %}
+networking:
+  networkType: OVNKubernetes
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+  machineNetwork:
+    - cidr: 10.0.0.0/16
+platform:
+  aws:
+    region: {{ aws_region }}
+pullSecret: '{{ lookup("file", sno_pull_secret_file) | string }}'
+sshKey: '{{ lookup("file", sno_ssh_public_key_file) | trim }}'

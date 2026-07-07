@@ -1,199 +1,266 @@
 ---
-- name: Deploy Single Node OpenShift on AWS
-  hosts: sno_clusters
+# Deploy Single Node OpenShift on AWS using the native openshift-install IPI flow.
+#
+# The installer provisions everything itself (VPC, subnets, security groups, the
+# single control-plane EC2 instance, a temporary bootstrap instance, the API/Ingress
+# load balancers, and the Route53 records under the base-domain hosted zone).
+#
+# Requirements (validated below):
+#   - openshift-install binary on PATH
+#   - AWS credentials (env AWS_ACCESS_KEY_ID/SECRET or AWS_PROFILE, or ~/.aws/credentials)
+#   - pull-secret.json and ssh-key.pub in the repo root
+#   - sno_base_domain must be a Route53 PUBLIC hosted zone in the target account
+#
+# Each cluster is described by a host in the [sno_aws_clusters] inventory group with a
+# matching host_vars file. Both clusters install concurrently (forks permitting).
+- name: Deploy Single Node OpenShift on AWS (IPI)
+  hosts: sno_aws_clusters
   gather_facts: false
+  serial: "{{ aws_deploy_serial | default(0) }}"   # 0 = all hosts at once; set 1 to serialize
   vars:
-    aws_region: "{{ aws_region | default('us-east-1') }}"
-    aws_instance_type: "{{ aws_instance_type | default('m5.2xlarge') }}"
-    aws_root_volume_size: "{{ aws_root_volume_size | default(120) }}"
-    aws_secondary_volume_size: "{{ aws_secondary_volume_size | default(100) }}"
-    aws_ami_id: "{{ aws_ami_id | default('') }}"  # RHCOS AMI ID
-    aws_vpc_id: "{{ aws_vpc_id | default('') }}"
-    aws_subnet_id: "{{ aws_subnet_id | default('') }}"
-    aws_security_group_id: "{{ aws_security_group_id | default('') }}"
-    aws_key_name: "{{ aws_key_name | default('') }}"
-  
+    # aws_region / aws_instance_type / aws_root_volume_size come from group_vars
+    # (inventory/group_vars/sno_aws_clusters.yml) and may be overridden per host.
+    install_dir: "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}"
+    artifacts_dir: "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}"
+    sno_pull_secret_file: "{{ playbook_dir }}/pull-secret.json"
+    sno_ssh_public_key_file: "{{ playbook_dir }}/ssh-key.pub"
+    install_timeout_seconds: 5400   # 90 min ceiling for create cluster
+
+    # Environment applied to every AWS-touching command (Route53 discovery and
+    # openshift-install). When this host sets `aws_profile`, AWS_PROFILE selects
+    # that account's named profile from ~/.aws/credentials; otherwise the ambient
+    # credentials are used. Region is always pinned so the right endpoints/AZs are
+    # chosen regardless of the profile's own region setting.
+    aws_env: >-
+      {{
+        (({'AWS_PROFILE': aws_profile} if (aws_profile | default('')) | length > 0 else {})
+          | combine({'AWS_REGION': aws_region, 'AWS_DEFAULT_REGION': aws_region}))
+      }}
+
+  pre_tasks:
+    # Derive the cluster base domain from Route53 unless it was set explicitly
+    # (host_vars / group_vars / -e sno_base_domain=...). The base domain must be a
+    # PUBLIC Route53 hosted zone in the target account; the installer creates the
+    # api/apps records under it.
+    - name: Determine base domain from Route53 (when not explicitly set)
+      when: (sno_base_domain | default('')) | length == 0
+      delegate_to: localhost
+      block:
+        - name: List Route53 hosted zones
+          ansible.builtin.command: aws route53 list-hosted-zones --output json
+          environment: "{{ aws_env }}"
+          register: _r53_raw
+          changed_when: false
+
+        - name: Extract public hosted zone names
+          ansible.builtin.set_fact:
+            available_hosted_zones: >-
+              {{ (_r53_raw.stdout | from_json).HostedZones
+                 | rejectattr('Config.PrivateZone')
+                 | map(attribute='Name')
+                 | map('regex_replace', '[.]$', '') | list }}
+
+        - name: Fail when no public hosted zones exist
+          ansible.builtin.fail:
+            msg: >-
+              No public Route53 hosted zones found in this account. Create one or set
+              sno_base_domain explicitly (host_vars or -e sno_base_domain=example.com).
+          when: available_hosted_zones | length == 0
+
+        - name: Use the only hosted zone available
+          ansible.builtin.set_fact:
+            sno_base_domain: "{{ available_hosted_zones[0] }}"
+          when: available_hosted_zones | length == 1
+
+        - name: Prompt for hosted zone (multiple available)
+          ansible.builtin.pause:
+            prompt: |-
+              Multiple Route53 public hosted zones found:
+              {% for z in available_hosted_zones %}  {{ loop.index }}) {{ z }}
+              {% endfor %}
+              Enter the number of the base domain to use for {{ inventory_hostname }}
+          register: _zone_choice
+          when: available_hosted_zones | length > 1
+
+        - name: Set base domain from selection
+          ansible.builtin.set_fact:
+            sno_base_domain: "{{ available_hosted_zones[(_zone_choice.user_input | int) - 1] }}"
+          when:
+            - available_hosted_zones | length > 1
+            - _zone_choice is not skipped
+
+        - name: Show chosen base domain
+          ansible.builtin.debug:
+            msg: "Using base domain '{{ sno_base_domain }}' for {{ inventory_hostname }} ({{ sno_cluster_name }})"
+
   tasks:
-    - name: Validate AWS configuration
+    - name: Verify openshift-install is available
+      ansible.builtin.command: openshift-install version
+      delegate_to: localhost
+      changed_when: false
+      register: oc_install_version
+
+    - name: Stat AWS shared credentials file
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.aws/credentials"
+      register: aws_creds_file
+      delegate_to: localhost
+
+    - name: Ensure AWS credentials are available
       ansible.builtin.assert:
         that:
-          - aws_ami_id is defined and aws_ami_id != ''
-          - aws_vpc_id is defined and aws_vpc_id != ''
-          - aws_subnet_id is defined and aws_subnet_id != ''
-          - aws_security_group_id is defined and aws_security_group_id != ''
-          - aws_key_name is defined and aws_key_name != ''
-        fail_msg: "AWS configuration variables must be set (aws_ami_id, aws_vpc_id, aws_subnet_id, aws_security_group_id, aws_key_name)"
-    
-    - name: Check for AWS credentials
+          - ((aws_profile | default('')) | length > 0 and aws_creds_file.stat.exists) or
+            (lookup('env', 'AWS_ACCESS_KEY_ID') | length > 0) or
+            (lookup('env', 'AWS_PROFILE') | length > 0) or
+            aws_creds_file.stat.exists
+        fail_msg: >-
+          No AWS credentials found for {{ sno_cluster_name }}. Set aws_profile in
+          host_vars (a named profile in ~/.aws/credentials), or provide
+          AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, or ~/.aws/credentials.
+
+    - name: Verify the requested AWS named profile exists
+      when: (aws_profile | default('')) | length > 0
+      delegate_to: localhost
+      block:
+        - name: Read AWS shared credentials file
+          ansible.builtin.slurp:
+            src: "{{ lookup('env', 'HOME') }}/.aws/credentials"
+          register: _aws_creds_content
+
+        - name: Assert the [{{ aws_profile }}] profile section is present
+          ansible.builtin.assert:
+            that:
+              - "'[' ~ aws_profile ~ ']' in (_aws_creds_content.content | b64decode)"
+            fail_msg: >-
+              AWS profile '[{{ aws_profile }}]' (required by cluster
+              {{ sno_cluster_name }}) was not found in ~/.aws/credentials.
+              Add the profile or change aws_profile in host_vars.
+
+    - name: Ensure pull secret exists
+      ansible.builtin.stat:
+        path: "{{ sno_pull_secret_file }}"
+      register: pull_secret_stat
+      delegate_to: localhost
+
+    - name: Ensure SSH public key exists
+      ansible.builtin.stat:
+        path: "{{ sno_ssh_public_key_file }}"
+      register: ssh_key_stat
+      delegate_to: localhost
+
+    - name: Fail if pull secret or SSH key is missing
       ansible.builtin.assert:
         that:
-          - lookup('env', 'AWS_ACCESS_KEY_ID') != '' or lookup('env', 'AWS_PROFILE') != ''
-        fail_msg: "AWS credentials not found. Set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE"
-    
-    - name: Include prerequisites role
-      ansible.builtin.include_role:
-        name: sno_prerequisites
-      vars:
-        skip_kubevirt_checks: true
-    
-    - name: Include OpenShift installation preparation role
-      ansible.builtin.include_role:
-        name: sno_prepare_installation
-    
-    - name: Create temporary directory for AWS deployment
-      ansible.builtin.tempfile:
+          - pull_secret_stat.stat.exists
+          - ssh_key_stat.stat.exists
+        fail_msg: >-
+          Missing {{ sno_pull_secret_file }} and/or {{ sno_ssh_public_key_file }}.
+
+    - name: Refuse to clobber an already-deployed cluster
+      ansible.builtin.stat:
+        path: "{{ install_dir }}/metadata.json"
+      register: cluster_metadata
+      delegate_to: localhost
+
+    - name: Fail if cluster state already exists
+      ansible.builtin.fail:
+        msg: >-
+          {{ install_dir }}/metadata.json already exists - cluster '{{ sno_cluster_name }}'
+          appears to be deployed. Destroy it first with:
+          openshift-install destroy cluster --dir {{ install_dir }}
+      when: cluster_metadata.stat.exists
+
+    - name: Clean up stale artifacts for this cluster before (re)deploying
+      # aws-deploy regenerates every artifact (kubeconfig, kubeadmin-password,
+      # install-config, cluster-info). Wipe any leftovers from a previous deploy
+      # of this cluster name so a stale kubeconfig can't linger and get picked up
+      # by later ACM/oc steps. Scoped to THIS cluster's artifacts_dir so a
+      # --limit run never touches other clusters, and it runs only after the
+      # clobber guard above - a currently-deployed cluster is never wiped.
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}"
+        state: absent
+      delegate_to: localhost
+
+    - name: Create install and artifacts directories
+      ansible.builtin.file:
+        path: "{{ item }}"
         state: directory
-        suffix: sno-aws
-      register: aws_temp_dir
-    
-    - name: Generate discovery ISO path
-      ansible.builtin.set_fact:
-        discovery_iso_path: "{{ tmp_dir }}/{{ sno_cluster_name }}-discovery.iso"
-    
-    - name: Upload discovery ISO to S3
-      amazon.aws.s3_object:
-        bucket: "{{ aws_s3_bucket }}"
-        object: "sno-isos/{{ sno_cluster_name }}-discovery.iso"
-        src: "{{ discovery_iso_path }}"
-        mode: put
-        region: "{{ aws_region }}"
-      when: aws_s3_bucket is defined
-    
-    - name: Create EC2 instance for SNO
-      amazon.aws.ec2_instance:
-        name: "{{ sno_cluster_name }}"
-        region: "{{ aws_region }}"
-        instance_type: "{{ aws_instance_type }}"
-        image_id: "{{ aws_ami_id }}"
-        vpc_subnet_id: "{{ aws_subnet_id }}"
-        security_group: "{{ aws_security_group_id }}"
-        key_name: "{{ aws_key_name }}"
-        network:
-          assign_public_ip: true
-        volumes:
-          - device_name: /dev/sda1
-            ebs:
-              volume_size: "{{ aws_root_volume_size }}"
-              volume_type: gp3
-              delete_on_termination: true
-          - device_name: /dev/sdb
-            ebs:
-              volume_size: "{{ aws_secondary_volume_size }}"
-              volume_type: gp3
-              delete_on_termination: true
-        user_data: "{{ lookup('file', discovery_iso_path) | b64encode }}"
-        tags:
-          Name: "{{ sno_cluster_name }}"
-          Type: "SingleNodeOpenShift"
-          Environment: "{{ environment | default('dev') }}"
-          ManagedBy: "Ansible"
-        state: running
-        wait: true
-      register: ec2_instance
-    
-    - name: Wait for instance to be running
-      amazon.aws.ec2_instance_info:
-        region: "{{ aws_region }}"
-        instance_ids:
-          - "{{ ec2_instance.instance_ids[0] }}"
-      register: instance_info
-      until: instance_info.instances[0].state.name == 'running'
-      retries: 30
-      delay: 10
-    
-    - name: Get instance details
-      ansible.builtin.set_fact:
-        instance_public_ip: "{{ instance_info.instances[0].public_ip_address }}"
-        instance_private_ip: "{{ instance_info.instances[0].private_ip_address }}"
-        instance_id: "{{ instance_info.instances[0].instance_id }}"
-    
-    - name: Create Elastic IP
-      amazon.aws.ec2_eip:
-        region: "{{ aws_region }}"
-        device_id: "{{ instance_id }}"
-        release_on_disassociation: true
-        tags:
-          Name: "{{ sno_cluster_name }}-eip"
-      register: eip
-      when: aws_create_eip | default(true) | bool
-    
-    - name: Update public IP if EIP created
-      ansible.builtin.set_fact:
-        instance_public_ip: "{{ eip.public_ip }}"
-      when: eip is defined and eip.public_ip is defined
-    
-    - name: Create DNS record for API endpoint
-      amazon.aws.route53:
-        state: present
-        zone: "{{ sno_base_domain }}"
-        record: "api.{{ sno_cluster_name }}.{{ sno_base_domain }}"
-        type: A
-        ttl: 300
-        value: "{{ instance_public_ip }}"
-        wait: true
-      when: aws_route53_zone is defined
-    
-    - name: Create DNS record for apps wildcard
-      amazon.aws.route53:
-        state: present
-        zone: "{{ sno_base_domain }}"
-        record: "*.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}"
-        type: A
-        ttl: 300
-        value: "{{ instance_public_ip }}"
-        wait: true
-      when: aws_route53_zone is defined
-    
-    - name: Wait for OpenShift installation to complete
-      ansible.builtin.uri:
-        url: "https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443/healthz"
-        validate_certs: false
-        status_code: 200
-      register: api_health
-      until: api_health.status == 200
-      retries: 90
-      delay: 60
-      failed_when: false
-    
-    - name: Extract kubeconfig
-      ansible.builtin.shell: |
-        {{ openshift_install_path }}/openshift-install --dir={{ tmp_dir }} wait-for install-complete
-      register: install_complete
-      failed_when: false
-    
-    - name: Save cluster credentials
+        mode: '0755'
+      loop:
+        - "{{ install_dir }}"
+        - "{{ artifacts_dir }}"
+      delegate_to: localhost
+
+    - name: Render install-config.yaml
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/roles/sno_prepare_installation/templates/install-config-aws.yaml.j2"
+        dest: "{{ install_dir }}/install-config.yaml"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Back up install-config.yaml (installer consumes the original)
+      ansible.builtin.copy:
+        src: "{{ install_dir }}/install-config.yaml"
+        dest: "{{ artifacts_dir }}/install-config.yaml"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Run openshift-install create cluster (~30-45 min per cluster)
+      ansible.builtin.command:
+        cmd: "openshift-install create cluster --dir {{ install_dir }} --log-level=info"
+        creates: "{{ install_dir }}/auth/kubeconfig"
+      environment: "{{ aws_env }}"
+      async: "{{ install_timeout_seconds }}"
+      poll: 30
+      delegate_to: localhost
+      register: install_result
+
+    - name: Copy kubeconfig to artifacts
+      ansible.builtin.copy:
+        src: "{{ install_dir }}/auth/kubeconfig"
+        dest: "{{ artifacts_dir }}/kubeconfig"
+        mode: '0600'
+      delegate_to: localhost
+
+    - name: Copy kubeadmin password to artifacts
+      ansible.builtin.copy:
+        src: "{{ install_dir }}/auth/kubeadmin-password"
+        dest: "{{ artifacts_dir }}/kubeadmin-password"
+        mode: '0600'
+      delegate_to: localhost
+
+    - name: Read kubeadmin password
+      ansible.builtin.slurp:
+        src: "{{ install_dir }}/auth/kubeadmin-password"
+      register: kubeadmin_pw
+      delegate_to: localhost
+
+    - name: Write cluster info file
       ansible.builtin.copy:
         content: |
-          Cluster: {{ sno_cluster_name }}
-          Region: {{ aws_region }}
-          Instance ID: {{ instance_id }}
-          Public IP: {{ instance_public_ip }}
-          Private IP: {{ instance_private_ip }}
-          API URL: https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443
-          Console URL: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}
-          
-          Kubeconfig: {{ tmp_dir }}/auth/kubeconfig
-          Kubeadmin Password: {{ tmp_dir }}/auth/kubeadmin-password
-        dest: "{{ artifacts_dir }}/{{ sno_cluster_name }}-aws-info.txt"
-    
-    - name: Display deployment status
+          Cluster Name: {{ sno_cluster_name }}
+          Base Domain:  {{ sno_base_domain }}
+          AWS Profile:  {{ ((aws_profile | default('')) | length > 0) | ternary(aws_profile, '(ambient credentials)') }}
+          Region:       {{ aws_region }}
+          Instance:     {{ aws_instance_type }}
+          API URL:      https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443
+          Console URL:  https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}
+          Kubeconfig:   {{ artifacts_dir }}/kubeconfig
+          Kubeadmin:    {{ artifacts_dir }}/kubeadmin-password
+        dest: "{{ artifacts_dir }}/cluster-info.txt"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Deployment summary
       ansible.builtin.debug:
         msg:
           - "=========================================="
-          - "SNO AWS Deployment Complete!"
-          - "=========================================="
-          - "Cluster Name: {{ sno_cluster_name }}"
-          - "Region: {{ aws_region }}"
-          - "Instance ID: {{ instance_id }}"
-          - "Instance Type: {{ aws_instance_type }}"
-          - "Public IP: {{ instance_public_ip }}"
-          - "Private IP: {{ instance_private_ip }}"
-          - ""
-          - "API URL: https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443"
-          - "Console: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}"
-          - ""
-          - "Next steps:"
-          - "1. Wait for installation to complete (~45 minutes)"
-          - "2. Access credentials in: {{ artifacts_dir }}/{{ sno_cluster_name }}-aws-info.txt"
-          - "3. Import to ACM: ./ansible-runner.sh acm"
+          - "SNO on AWS deployment complete: {{ sno_cluster_name }}"
+          - "Console:  https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ sno_base_domain }}"
+          - "API:      https://api.{{ sno_cluster_name }}.{{ sno_base_domain }}:6443"
+          - "User:     kubeadmin"
+          - "Password: {{ kubeadmin_pw.content | b64decode }}"
+          - "Kubeconfig: {{ artifacts_dir }}/kubeconfig"
+          - "Destroy with: openshift-install destroy cluster --dir {{ install_dir }}"
           - "=========================================="

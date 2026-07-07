@@ -8,6 +8,7 @@
     acm_namespace: "open-cluster-management"
     gitops_hub_namespace: "gitops-hub-policies"
     sno_policies_namespace: "sno-policies"
+    sno_operator_policies_namespace: "sno-operator-policies"
   
   tasks:
     - name: Setup authentication parameters for hub cluster
@@ -25,12 +26,12 @@
     
     - name: Display ACM status
       ansible.builtin.debug:
-        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+        msg: "ACM {{ 'is installed' if acm_check.resources is defined and acm_check.resources | length > 0 else 'is NOT installed' }}"
     
     - name: Fail if ACM is not installed
       ansible.builtin.fail:
         msg: "ACM is not installed. There are no policies to delete."
-      when: acm_check.resources | length == 0
+      when: acm_check.resources is not defined or acm_check.resources | length == 0
     
     - name: Check if policy namespaces exist
       kubernetes.core.k8s_info:
@@ -42,6 +43,8 @@
       loop:
         - "{{ gitops_hub_namespace }}"
         - "{{ sno_policies_namespace }}"
+        - "{{ sno_operator_policies_namespace }}"
+        - volsync-rbac-policies
       ignore_errors: true
     
     - name: Display deletion plan
@@ -74,9 +77,16 @@
           - "  - ManagedClusterSetBindings in openshift-gitops"
           - "  - Placements for GitOps integration"
           - ""
+          - "VolSync RBAC Policies:"
+          - "  - volsync-privileged-scc policy"
+          - "  - Placement and PlacementBinding"
+          - "  - ManagedClusterSetBinding in volsync-rbac-policies"
+          - ""
           - "Namespaces:"
           - "  - {{ gitops_hub_namespace }}"
           - "  - {{ sno_policies_namespace }}"
+          - "  - {{ sno_operator_policies_namespace }}"
+          - "  - volsync-rbac-policies"
           - ""
           - "WARNING: This will NOT uninstall the operators from clusters."
           - "It only removes the ACM policies that manage them."
@@ -139,6 +149,27 @@
       when: sno_policies.resources is defined and sno_policies.resources | length > 0
       ignore_errors: true
     
+    - name: Get all policies in SNO operator policies namespace
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: "{{ sno_operator_policies_namespace }}"
+      args: "{{ k8s_auth_params }}"
+      register: sno_operator_policies
+      ignore_errors: true
+    
+    - name: Delete all SNO operator policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ sno_operator_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ sno_operator_policies.resources }}"
+      when: sno_operator_policies.resources is defined and sno_operator_policies.resources | length > 0
+      ignore_errors: true
+    
     - name: Get all policies in GitOps hub namespace
       kubernetes.core.k8s_info:
         api_version: policy.open-cluster-management.io/v1
@@ -158,6 +189,57 @@
       args: "{{ k8s_auth_params }}"
       loop: "{{ hub_policies.resources }}"
       when: hub_policies.resources is defined and hub_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Get all policies in VolSync RBAC namespace
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        namespace: volsync-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_policies
+      ignore_errors: true
+    
+    - name: Delete all VolSync RBAC policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item.metadata.name }}"
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ volsync_policies.resources }}"
+      when: volsync_policies.resources is defined and volsync_policies.resources | length > 0
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC PlacementBinding
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-privileged-scc-binding
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC Placement
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-volsync-rbac-placement
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC ManagedClusterSetBinding
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
     - name: Get all GitOpsCluster resources
@@ -244,6 +326,16 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete ManagedClusterSetBinding in SNO operator policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: "{{ sno_operator_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Wait for all policies to be deleted
       kubernetes.core.k8s_info:
         api_version: policy.open-cluster-management.io/v1
@@ -257,6 +349,7 @@
       loop:
         - "{{ gitops_hub_namespace }}"
         - "{{ sno_policies_namespace }}"
+        - "{{ sno_operator_policies_namespace }}"
       ignore_errors: true
     
     - name: Delete GitOps hub policies namespace
@@ -277,6 +370,24 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete SNO operator policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ sno_operator_policies_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Delete VolSync RBAC policies namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: volsync-rbac-policies
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Wait for namespaces to be deleted
       kubernetes.core.k8s_info:
         api_version: v1
@@ -290,6 +401,8 @@
       loop:
         - "{{ gitops_hub_namespace }}"
         - "{{ sno_policies_namespace }}"
+        - "{{ sno_operator_policies_namespace }}"
+        - volsync-rbac-policies
       ignore_errors: true
     
     - name: Display deletion summary
@@ -302,7 +415,8 @@
           - "  - All ACM policies for infrastructure operators"
           - "  - PolicySet: sno-infrastructure-policyset"
           - "  - ManagedClusterSetBindings in policy namespaces"
-          - "  - Namespaces: {{ gitops_hub_namespace }}, {{ sno_policies_namespace }}"
+          - "  - VolSync RBAC policies (volsync-privileged-scc)"
+          - "  - Namespaces: {{ gitops_hub_namespace }}, {{ sno_policies_namespace }}, {{ sno_operator_policies_namespace }}, volsync-rbac-policies"
           - ""
           - "IMPORTANT NOTES:"
           - "1. Operators are still installed on the clusters"

@@ -1,163 +1,125 @@
 # Documentation Index
 
-This directory contains comprehensive documentation for deploying Single Node OpenShift (SNO) clusters on OpenShift Virtualization and AWS.
+This directory contains comprehensive documentation for deploying Single Node OpenShift (SNO) clusters on OpenShift Virtualization.
 
 ## Quick Navigation
 
 ### Getting Started
 
-- **[Platform Comparison Guide](PLATFORM-COMPARISON.md)** ⭐ Start here
-  - Compare OpenShift Virtualization vs AWS
-  - Decision matrix and recommendations
-  - Cost comparison
-  - Hybrid DR approach
+- **[Main README](../README.md)** ⭐ Start here
+  - Complete deployment guide
+  - Prerequisites and setup
+  - Configuration examples
+  - Troubleshooting
 
-- **[AWS Quick Start](QUICKSTART-AWS.md)** 🚀 Deploy in < 1 hour
-  - Streamlined AWS deployment
-  - Copy-paste commands
-  - Complete prerequisites setup
-  - Quick verification steps
+- **[Architecture Diagram](../architecture-diagram.drawio)** 📐 Visual reference
+  - System architecture
+  - Component relationships
+  - Data flows
 
-### Detailed Guides
+### Advanced Topics
 
-- **[AWS Deployment Guide](AWS-DEPLOYMENT-GUIDE.md)** 📘 Comprehensive reference
-  - Complete AWS setup instructions
-  - IAM permissions and prerequisites
-  - VPC and networking configuration
-  - Finding RHCOS AMI IDs
-  - Route53 DNS setup
-  - Troubleshooting guide
-  - Cost optimization strategies
-  - Cleanup procedures
+- **[VolSync Failover Blog](VOLSYNC-FAILOVER-BLOG.md)** 🔄 Disaster Recovery
+  - Automated DR with VolSync + ACM
+  - Zero-touch failover/failback
+  - Policy-driven replication
+  - Step-by-step scenarios
 
-- **[AWS Feature Summary](AWS-FEATURE-SUMMARY.md)** 📋 Technical documentation
-  - Implementation details
-  - Configuration files modified
-  - Integration with existing features
-  - Testing recommendations
-  - Known limitations
-  - Future enhancements
+- **[Authentication Guide](AUTHENTICATION.md)** 🔐 Security
+  - Cluster authentication
+  - Certificate management
+  - Access control
+
+- **[Networking Guide](NETWORKING.md)** 🌐 Advanced networking
+  - Network configurations
+  - Network attachment definitions
+  - Multi-network setups
 
 ## Documentation Overview
 
 ### For New Users
 
-**Question: "Which platform should I use?"**
-→ Read [Platform Comparison Guide](PLATFORM-COMPARISON.md)
+**Question: "How do I get started?"**
+→ Follow the main [README.md](../README.md)
 
-**Question: "How do I get started with AWS?"**
-→ Follow [AWS Quick Start](QUICKSTART-AWS.md)
+**Question: "How do I set up disaster recovery?"**
+→ Read [VolSync Failover Blog](VOLSYNC-FAILOVER-BLOG.md)
 
-**Question: "I have an OpenShift cluster already"**
-→ See main [README.md](../README.md) for OpenShift Virtualization
+**Question: "How do I configure networking?"**
+→ See [Networking Guide](NETWORKING.md)
 
-### For AWS Users
+### For Operators
 
-**Prerequisites and Setup:**
-1. [Platform Comparison](PLATFORM-COMPARISON.md) - Understand the platform choice
-2. [AWS Quick Start](QUICKSTART-AWS.md) - Rapid deployment guide
-3. [AWS Deployment Guide](AWS-DEPLOYMENT-GUIDE.md) - Detailed setup and configuration
+**Deployment:**
+1. [README.md](../README.md) - Complete deployment guide
+2. [Configuration Examples](../inventory/host_vars/) - Cluster-specific settings
+3. [Troubleshooting](../README.md#troubleshooting) - Common issues
 
-**Troubleshooting:**
-- [AWS Deployment Guide - Troubleshooting Section](AWS-DEPLOYMENT-GUIDE.md#troubleshooting)
-- [AWS Deployment Guide - Common Issues](AWS-DEPLOYMENT-GUIDE.md#common-issues)
+**Disaster Recovery:**
+- [VolSync Failover Blog](VOLSYNC-FAILOVER-BLOG.md) - Automated DR setup
+- [ACM Policies](../acm-policy-volsync-automate.yaml) - Policy definitions
 
-**Cost Management:**
-- [AWS Deployment Guide - Cost Optimization](AWS-DEPLOYMENT-GUIDE.md#cost-optimization)
-- [Platform Comparison - Cost Comparison](PLATFORM-COMPARISON.md#cost-comparison)
-
-### For OpenShift Virtualization Users
-
-**Prerequisites and Setup:**
-- See main [README.md](../README.md)
-
-**Configuration:**
-- See [README.md - Configuration Section](../README.md#configuration)
+**Security:**
+- [Authentication Guide](AUTHENTICATION.md) - Access control
+- [README.md - Security](../README.md#security) - Security best practices
 
 ### For Developers
 
 **Architecture:**
 - [Architecture Diagram](../architecture-diagram.drawio) - Visual representation
-- [AWS Feature Summary](AWS-FEATURE-SUMMARY.md) - Technical implementation
+- [VolSync Blog Diagrams](diagrams/) - DR architecture diagrams
 
 **Integration:**
-- [AWS Feature Summary - Integration Section](AWS-FEATURE-SUMMARY.md#integration-with-existing-features)
+- [ACM Integration](../acm-deploy-infrastructure.yml) - Operator deployment
+- [GitOps Setup](../acm-deploy-application.yml) - Application deployment
 
 ## Document Summaries
 
-### Platform Comparison Guide (600+ lines)
+### VolSync Failover Blog (800+ lines)
 
-**Purpose:** Help users choose between OpenShift Virtualization and AWS
+**Purpose:** Comprehensive guide to automated disaster recovery using VolSync and ACM
 
 **Key Sections:**
-- Quick decision matrix with visual indicators
-- Detailed comparison of features, costs, and capabilities
-- When to use each platform
-- Advantages and disadvantages
-- Cost breakdown for both platforms
-- Hybrid approach (recommended for DR)
-- Decision guide with questions
-- Migration considerations between platforms
-- Recommendation matrix by scenario
+- Architecture overview with diagrams
+- 6 ACM policies explained in detail
+- Cross-cluster data replication
+- Zero-touch failover scenarios
+- Failback procedures
+- Technical deep dive (hub templates, ManagedClusterView)
+- Troubleshooting and debugging
+- Performance considerations
 
-**Best For:** Anyone evaluating deployment options
+**Best For:** Anyone implementing disaster recovery with VolSync
 
 ---
 
-### AWS Quick Start (400+ lines)
+### Authentication Guide
 
-**Purpose:** Get from zero to running SNO on AWS in under an hour
+**Purpose:** Secure cluster access and authentication setup
 
 **Key Sections:**
-- Prerequisites checklist
-- Quick AWS resource setup (VPC, subnet, security group)
-- Automated infrastructure creation with copy-paste commands
-- RHCOS AMI discovery
-- Cluster configuration
-- Authentication setup
-- Deployment steps
-- Monitoring progress
-- Verification
-- Cleanup procedures
-- Quick troubleshooting
+- Authentication methods
+- Certificate management
+- User and service account configuration
+- RBAC setup
 
-**Best For:** Users who want rapid AWS deployment
+**Best For:** Security-focused deployments
 
 ---
 
-### AWS Deployment Guide (850+ lines)
+### Networking Guide
 
-**Purpose:** Comprehensive reference for AWS deployments
-
-**Key Sections:**
-- **Prerequisites:** IAM permissions, AWS CLI setup, account requirements
-- **AWS Resource Preparation:** VPC, subnets, security groups, key pairs, Route53
-- **Configuration:** Host variables, inventory setup, AWS-specific settings
-- **Deployment:** Step-by-step deployment instructions
-- **Verification:** Cluster access, console access, SSH access
-- **Troubleshooting:** Instance launch issues, DNS issues, network connectivity, storage issues
-- **Cost Optimization:** Instance sizing, EBS optimization, cost-saving tips, monthly estimates
-- **Cleanup:** Manual cleanup, automated scripts
-
-**Best For:** Users who need detailed reference and troubleshooting
-
----
-
-### AWS Feature Summary (700+ lines)
-
-**Purpose:** Technical documentation for developers and maintainers
+**Purpose:** Advanced networking configurations for SNO clusters
 
 **Key Sections:**
-- Changes made (playbooks, scripts, configurations)
-- Technical details (AWS resources, device naming, integration)
-- Workflow examples
-- Testing recommendations
-- Known limitations
-- Future enhancements
-- Dependencies
-- Verification checklist
+- Network attachment definitions
+- Bridge networks
+- OVS networks
+- VLAN configurations
+- Static IP assignments
+- Multi-network pod configuration
 
-**Best For:** Developers, maintainers, and technical reviewers
+**Best For:** Complex networking requirements
 
 ## Related Documentation
 
@@ -165,100 +127,101 @@ This directory contains comprehensive documentation for deploying Single Node Op
 
 - [README.md](../README.md) - Main project documentation
 - [architecture-diagram.drawio](../architecture-diagram.drawio) - Architecture visualization
+- [QUICKSTART.md](../QUICKSTART.md) - Quick start guide
 
 ### Configuration Files
 
 - `inventory/group_vars/all.yml` - Global configuration
-- `inventory/host_vars/sno-aws-example.yml` - AWS example configuration
+- `inventory/host_vars/sno-cluster.yml` - Example cluster configuration
 - `inventory/host_vars/*.yml` - Cluster-specific configuration
 
 ### Playbooks
 
-- `deploy-sno.yml` - OpenShift Virtualization deployment
-- `deploy-sno-aws.yml` - AWS deployment
-- `acm-deploy-infrastructure.yml` - ACM policy deployment
+- `deploy-sno.yml` - SNO cluster deployment
+- `acm-deploy-infrastructure.yml` - ACM and operator deployment
 - `acm-deploy-application.yml` - Application deployment via GitOps
+- `acm-policy-volsync-automate.yaml` - VolSync DR policies
 
 ## Quick Reference Commands
 
-### OpenShift Virtualization
+### Deploy SNO Cluster
 ```bash
-./ansible-runner.sh deploy --limit sno-cluster-01
+./ansible-runner.sh deploy --limit sno-cluster
 ```
 
-### AWS
-```bash
-./ansible-runner.sh deployaws --limit sno-aws-01
-```
-
-### Operators (Both Platforms)
+### Deploy Operators (ACM, MetalLB, LVM, GitOps, VolSync)
 ```bash
 ./ansible-runner.sh operators
 ```
 
-### Application (Both Platforms)
+### Deploy Application with DR
 ```bash
 ./ansible-runner.sh deployapp
+```
+
+### Cleanup
+```bash
+./ansible-runner.sh deleteapp
+./ansible-runner.sh destroy --limit sno-cluster
 ```
 
 ## Common Scenarios
 
-### Scenario 1: Deploy Single SNO on AWS
+### Scenario 1: Deploy Single SNO Cluster
 
 **Documents to read:**
-1. [AWS Quick Start](QUICKSTART-AWS.md)
+1. [README.md - Quick Start](../README.md)
+2. [QUICKSTART.md](../QUICKSTART.md)
 
 **Commands:**
 ```bash
-./ansible-runner.sh deployaws --limit sno-aws-01
-./ansible-runner.sh operators --limit sno-aws-01
-./ansible-runner.sh deployapp
+./ansible-runner.sh deploy --limit sno-cluster
 ```
 
 ---
 
-### Scenario 2: Hybrid DR (OpenShift Virt + AWS)
+### Scenario 2: Deploy Multiple SNO Clusters with DR
 
 **Documents to read:**
-1. [Platform Comparison - Hybrid Approach](PLATFORM-COMPARISON.md#hybrid-approach-recommended-for-dr)
-2. [README.md - Complete Deployment Examples](../README.md#complete-deployment-examples)
+1. [VolSync Failover Blog](VOLSYNC-FAILOVER-BLOG.md)
+2. [README.md - Complete Deployment](../README.md#complete-deployment-examples)
 
 **Commands:**
 ```bash
-./ansible-runner.sh deploy --limit sno-cluster-01
-./ansible-runner.sh deployaws --limit sno-aws-01
+./ansible-runner.sh deploy --limit sno-cluster
+./ansible-runner.sh deploy --limit sno-cluster2
 ./ansible-runner.sh operators
 ./ansible-runner.sh deployapp
 ```
 
 ---
 
-### Scenario 3: Cost Optimization
+### Scenario 3: Configure Advanced Networking
 
 **Documents to read:**
-1. [AWS Deployment Guide - Cost Optimization](AWS-DEPLOYMENT-GUIDE.md#cost-optimization)
-2. [Platform Comparison - Cost Comparison](PLATFORM-COMPARISON.md#cost-comparison)
+1. [Networking Guide](NETWORKING.md)
+2. [Network Attachment Definitions Examples](../examples/network-attachment-definitions/)
 
 **Key Actions:**
-- Use smaller instance types for dev/test
-- Stop instances during off-hours
-- Use Reserved Instances for long-term
-- Clean up unused resources
+- Review NAD examples (bridge, OVS, VLAN)
+- Configure host_vars with network settings
+- Apply NADs after deployment
+- Validate connectivity
 
 ---
 
-### Scenario 4: Troubleshooting AWS Deployment
+### Scenario 4: Troubleshooting Deployment
 
 **Documents to read:**
-1. [AWS Deployment Guide - Troubleshooting](AWS-DEPLOYMENT-GUIDE.md#troubleshooting)
-2. [README.md - Troubleshooting](../README.md#troubleshooting)
+1. [README.md - Troubleshooting](../README.md#troubleshooting)
+2. [VolSync Blog - Troubleshooting](VOLSYNC-FAILOVER-BLOG.md#troubleshooting)
 
 **Common Checks:**
-- Verify AWS credentials
-- Check EC2 instance status
-- Validate security group rules
-- Verify Route53 DNS records
-- Check console output
+- Verify prerequisites (OCP version, storage)
+- Check VM status and console logs
+- Validate DNS resolution
+- Review installation logs in artifacts/
+- Check policy compliance in ACM
 
 ## Support and Community
 
@@ -280,14 +243,16 @@ If you find issues or have improvements:
 ## Document Maintenance
 
 ### Last Updated
-- Platform Comparison: 2024
-- AWS Quick Start: 2024
-- AWS Deployment Guide: 2024
-- AWS Feature Summary: 2024
+- Main README: 2026
+- VolSync Failover Blog: 2026
+- Networking Guide: 2024
+- Authentication Guide: 2024
 
 ### Version Compatibility
 - OpenShift: 4.14+ (tested with 4.20.2)
-- AWS: All regions
+- OpenShift Virtualization: 4.14+
+- ACM: 2.9+
+- VolSync: 0.9+
 - Ansible: 2.14+
 - Python: 3.9+
 

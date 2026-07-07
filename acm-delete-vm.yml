@@ -1,0 +1,158 @@
+---
+# Remove the DR demo VirtualMachine stack created by acm-deploy-vm.yml (deployvm).
+#
+# Run:  ./ansible-runner.sh deletevm
+#       ./ansible-runner.sh deletevm -e confirm_delete=yes   (skip the prompt)
+- name: Delete DR demo VirtualMachine from ACM and ArgoCD
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    vm_namespace: "vm-dr-demo"
+    policy_namespace: "vm-dr-policies"
+
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+
+    - name: Confirm deletion
+      ansible.builtin.pause:
+        prompt: |
+
+          This removes the VM DR stack (ApplicationSets, VolSync VM policies,
+          placements, hub config) and lets ArgoCD prune the VM + vm-data-pvc
+          from the managed clusters. Type 'yes' to proceed
+      register: delete_confirmation
+      when: confirm_delete is not defined
+
+    - name: Set confirmation fact
+      ansible.builtin.set_fact:
+        confirm_delete: "{{ delete_confirmation.user_input }}"
+      when: confirm_delete is not defined
+
+    - name: Fail if deletion not confirmed
+      ansible.builtin.fail:
+        msg: "Deletion cancelled."
+      when: confirm_delete | lower not in ['yes', 'y']
+
+    - name: Delete VM ApplicationSets (ArgoCD prunes VM + PVC on clusters)
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: "{{ item }}"
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - fedora-vm-appset
+        - vm-data-pvc-appset
+      ignore_errors: true
+
+    - name: Delete VolSync VM automation policies, bindings and placements
+      kubernetes.core.k8s:
+        state: absent
+        src: "{{ playbook_dir }}/acm-policy-volsync-vm.yaml"
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Delete all-cluster PVC Placement from openshift-gitops
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: vm-placement-all
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Delete VolSync destination info ConfigMap from hub
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - volsync-dest-info-vm-data
+        - volsync-dr-config-vm
+      ignore_errors: true
+
+    - name: Get VM ManagedClusterView objects
+      kubernetes.core.k8s_info:
+        api_version: view.open-cluster-management.io/v1beta1
+        kind: ManagedClusterView
+        label_selectors:
+          - volsync-role=destination-info
+          - app=volsync-vm
+      args: "{{ k8s_auth_params }}"
+      register: vm_mcvs
+      ignore_errors: true
+
+    - name: Delete VM ManagedClusterView objects
+      kubernetes.core.k8s:
+        api_version: view.open-cluster-management.io/v1beta1
+        kind: ManagedClusterView
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ item.metadata.namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ vm_mcvs.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+      ignore_errors: true
+
+    - name: Delete the VM policy namespace (policies, bindings, secret policy)
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ policy_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Delete the hub VM application namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ vm_namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+
+    - name: Get SNO clusters to reset app-role label
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        label_selectors:
+          - cluster-type=sno
+      args: "{{ k8s_auth_params }}"
+      register: sno_clusters
+      ignore_errors: true
+
+    - name: Remove app-role label from SNO clusters (keep cluster-type)
+      kubernetes.core.k8s_json_patch:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.metadata.name }}"
+        patch:
+          - op: remove
+            path: /metadata/labels/app-role
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ sno_clusters.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when: item.metadata.labels['app-role'] is defined
+      ignore_errors: true
+
+    - name: Deletion summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "VM DR stack removed."
+          - "ArgoCD is pruning fedora-dr-vm and vm-data-pvc from the clusters."
+          - "app-role labels reset (cluster-type=sno preserved)."
+          - "=========================================="

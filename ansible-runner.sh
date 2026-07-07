@@ -61,12 +61,25 @@ run_ansible() {
     local playbook="$1"
     shift
     local extra_args="$@"
-    
+
     if [ ! -f "$SCRIPT_DIR/$playbook" ]; then
         print_error "Playbook not found: $playbook"
         exit 1
     fi
-    
+
+    # Guard: the container image only carries the OpenShift-Virtualization
+    # toolchain (oc / kubernetes modules). AWS IPI playbooks shell out to
+    # openshift-install and the aws CLI and read ~/.aws credentials, none of
+    # which exist in the container - so they must run on the host instead.
+    if [[ "$playbook" == *aws* ]]; then
+        print_error "'$playbook' is an AWS playbook and cannot run in the container."
+        print_error "AWS installs need openshift-install, the aws CLI, and ~/.aws on the host."
+        echo "Run it on the host instead:"
+        echo "  ./ansible-runner.sh aws-deploy    # deploy-sno-aws.yml"
+        echo "  ./ansible-runner.sh aws-destroy   # destroy-sno-aws.yml"
+        exit 1
+    fi
+
     print_info "Running playbook: $playbook"
     
     # Ensure cache directory exists
@@ -197,6 +210,50 @@ run_ansible() {
     return $ansible_exit_code
 }
 
+# Function to run an Ansible playbook directly on the HOST (no container).
+#
+# Used for the AWS IPI flow: openshift-install and the aws CLI provision the
+# cluster from scratch, so there is no pre-existing kubeconfig to mount and the
+# work must happen where those binaries and ~/.aws credentials live. Requires
+# ansible-playbook, openshift-install, and the aws CLI installed on the host.
+run_ansible_host() {
+    local playbook="$1"
+    shift
+
+    if [ ! -f "$SCRIPT_DIR/$playbook" ]; then
+        print_error "Playbook not found: $playbook"
+        exit 1
+    fi
+
+    # Host tooling the AWS playbooks depend on.
+    local missing=0
+    for bin in ansible-playbook openshift-install aws; do
+        if ! command -v "$bin" &> /dev/null; then
+            print_error "Required host tool not found on PATH: $bin"
+            missing=1
+        fi
+    done
+    if [ "$missing" -ne 0 ]; then
+        echo "The AWS IPI flow runs on the host (not the container). Install the missing tools:"
+        echo "  - ansible-playbook   (pip install ansible / dnf install ansible-core)"
+        echo "  - openshift-install  (https://mirror.openshift.com/pub/openshift-v4/clients/ocp/)"
+        echo "  - aws                (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)"
+        exit 1
+    fi
+
+    # AWS credentials: an ambient env var, or ~/.aws/credentials (per-cluster
+    # aws_profile in host_vars selects the account). Warn but continue - the
+    # playbook re-validates per host and prints an actionable failure.
+    if [ -z "$AWS_ACCESS_KEY_ID" ] && [ -z "$AWS_PROFILE" ] && [ ! -f "$HOME/.aws/credentials" ]; then
+        print_warn "No AWS credentials detected (AWS_ACCESS_KEY_ID / AWS_PROFILE / ~/.aws/credentials)."
+        print_warn "Set one before deploying, or rely on aws_profile in each cluster's host_vars."
+    fi
+
+    print_info "Running playbook on host: $playbook"
+    cd "$SCRIPT_DIR"
+    ansible-playbook -i "$SCRIPT_DIR/inventory/hosts" "$SCRIPT_DIR/$playbook" "$@"
+}
+
 # Function to embed ignition into ISOs for all clusters
 embed_ignition_isos() {
     print_info "Checking for ISOs that need ignition embedding..."
@@ -295,14 +352,36 @@ usage() {
 Usage: $0 <command> [options]
 
 Commands:
+
+  Infrastructure - OpenShift Virtualization (runs Ansible in the container;
+  needs a kubeconfig/token for an EXISTING hub OCP cluster to build VMs on):
     build           Build the Ansible container image
-    deploy          Deploy SNO cluster on OpenShift Virtualization
-    destroy         Destroy SNO cluster
-    acm             Import deployed cluster into ACM
-    operators       Deploy operators to SNO clusters via ACM policies
+    deploy          Deploy SNO cluster(s) as VMs on OpenShift Virtualization
+    destroy         Destroy the OpenShift Virtualization SNO cluster(s)
+
+  Infrastructure - AWS IPI (runs on the HOST, not the container; needs
+  openshift-install + aws CLI + AWS creds. No kubeconfig required - the
+  installer creates the cluster from scratch):
+    aws-deploy      Deploy SNO cluster(s) on AWS (deploy-sno-aws.yml)
+    aws-destroy     Destroy the AWS SNO cluster(s)   (destroy-sno-aws.yml)
+
+  Common (run against clusters from EITHER platform above, once they exist):
+    acm             Import deployed cluster into ACM (single cluster)
+    acmimport       Import all clusters from credentials/ into ACM
+    acmremove       Remove all clusters from ACM
+    operators       Install ACM on the acm-hub cluster (only there) if absent,
+                    then deploy operators to SNO clusters via ACM policies
+                    (incl. the Submariner link between clusterset members when
+                    MetalLB is unused or on non-shared subnets)
     deleteoperators Delete operator policies from ACM (does not uninstall operators)
     deployapp       Deploy Quarkus MySQL application via ACM and ArgoCD
+                    (incl. a Submariner ServiceExport for the VolSync DR path)
     deleteapp       Delete Quarkus MySQL application from ACM and ArgoCD
+    deploycnv       Install OpenShift Virtualization (CNV) on the SNO clusters
+                    (prerequisite for deployvm; clusters must be bare-metal on AWS)
+    deployvm        Deploy DR demo VirtualMachine via ACM and ArgoCD
+                    (VolSync replicates the VM data disk; alternative to deployapp)
+    deletevm        Delete the DR demo VirtualMachine from ACM and ArgoCD
     artifact        Collect cluster artifacts (kubeconfig, passwords, etc.)
     run <playbook>  Run a specific playbook
     shell           Open a shell in the Ansible container
@@ -318,10 +397,17 @@ Examples:
     $0 deploy
     $0 deploy --limit sno-cluster-01 -v
     $0 destroy
+    $0 aws-deploy
+    $0 aws-deploy --limit sno-aws-1 -v
+    $0 aws-destroy --limit sno-aws-1
+    $0 acmimport
+    $0 acmremove
     $0 operators
     $0 deleteoperators
     $0 deployapp
     $0 deleteapp
+    $0 deployvm
+    $0 deployvm -e selected_cluster=sno-cluster-01
     $0 run deploy-sno.yml --check
     $0 shell
 
@@ -329,14 +415,21 @@ Environment Variables:
     OPENSHIFT_TOKEN         OpenShift API token (Option 1)
     KUBECONFIG              Path to kubeconfig file (Option 2 - Recommended)
     ASSISTED_OFFLINE_TOKEN  Red Hat Assisted Installer token (optional)
+    AWS_PROFILE             Named profile in ~/.aws/credentials (aws-* commands)
+    AWS_ACCESS_KEY_ID /     Ambient AWS credentials (aws-* commands, if no
+      AWS_SECRET_ACCESS_KEY   profile is set per-cluster in host_vars)
 
 Authentication:
-    The script will use kubeconfig if available (checked in order):
-    1. $KUBECONFIG environment variable
+    OpenShift Virtualization commands (build/deploy/destroy) and the common
+    ACM/app commands need a hub kubeconfig, checked in order:
+    1. \$KUBECONFIG environment variable
     2. ~/.kube/config
     3. ./kubeconfig file in project directory
-    
-    If no kubeconfig is found, it falls back to token authentication via OPENSHIFT_TOKEN.
+    If no kubeconfig is found, they fall back to OPENSHIFT_TOKEN.
+
+    AWS commands (aws-deploy/aws-destroy) need NO kubeconfig - openshift-install
+    creates the cluster. They authenticate to AWS via each cluster's aws_profile
+    (host_vars) or ambient AWS_PROFILE / AWS_ACCESS_KEY_ID credentials.
 
 EOF
 }
@@ -352,17 +445,41 @@ case "${1:-}" in
         shift
         run_ansible "deploy-sno.yml" "$@"
         ;;
-    
+
     destroy)
         build_image
         shift
         run_ansible "destroy-sno.yml" "$@"
+        ;;
+
+    aws-deploy)
+        # AWS IPI runs on the host, not the container (no kubeconfig needed -
+        # the installer creates the cluster). No build_image / container.
+        shift
+        run_ansible_host "deploy-sno-aws.yml" "$@"
+        ;;
+
+    aws-destroy)
+        shift
+        run_ansible_host "destroy-sno-aws.yml" "$@"
         ;;
     
     acm)
         build_image
         shift
         run_ansible "acm-import.yml" "$@"
+        ;;
+    
+    acmimport)
+        build_image
+        shift
+        run_ansible "acm-import-all.yml" "$@"
+        ;;
+    
+    acmremove)
+        build_image
+        shift
+        run_ansible "acm-remove-all.yml" "$@"
         ;;
     
     operators)
@@ -382,11 +499,29 @@ case "${1:-}" in
         shift
         run_ansible "acm-deploy-application.yml" "$@"
         ;;
-    
+
     deleteapp)
         build_image
         shift
         run_ansible "acm-delete-application.yml" "$@"
+        ;;
+
+    deploycnv)
+        build_image
+        shift
+        run_ansible "deploy-cnv.yml" "$@"
+        ;;
+
+    deployvm)
+        build_image
+        shift
+        run_ansible "acm-deploy-vm.yml" "$@"
+        ;;
+
+    deletevm)
+        build_image
+        shift
+        run_ansible "acm-delete-vm.yml" "$@"
         ;;
     
     artifact)

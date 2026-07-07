@@ -1,6 +1,307 @@
 ---
+# Install Red Hat Advanced Cluster Management on the hub, and ONLY on the hub.
+#
+# This play targets the acm-hub inventory host exclusively and talks to that
+# cluster via its OWN kubeconfig (credentials/<name>/auth/kubeconfig, falling
+# back to artifacts/<name>/kubeconfig) - never the SNO managed clusters. If a
+# MultiClusterHub already exists it is a no-op. The remaining plays then run the
+# normal import + operator-policy flow against the hub (KUBECONFIG).
+- name: Install ACM on the hub (acm) cluster only
+  hosts: acm-hub
+  gather_facts: false
+  vars:
+    acm_namespace: "{{ acm_operator_namespace | default('open-cluster-management') }}"
+  tasks:
+    - name: Locate the acm cluster kubeconfig
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/credentials/{{ sno_cluster_name }}/auth/kubeconfig"
+        - "{{ playbook_dir }}/artifacts/{{ sno_cluster_name }}/kubeconfig"
+      register: acm_kcfg_stat
+      delegate_to: localhost
+
+    - name: Fail if no kubeconfig found for the acm cluster
+      ansible.builtin.fail:
+        msg: >-
+          No kubeconfig found for the acm cluster '{{ sno_cluster_name }}'
+          (looked in credentials/{{ sno_cluster_name }}/auth/ and
+          artifacts/{{ sno_cluster_name }}/). Deploy it first with
+          './ansible-runner.sh aws-deploy --limit acm-hub'.
+      when: acm_kcfg_stat.results | selectattr('stat.exists') | list | length == 0
+
+    - name: Set acm cluster auth (its own kubeconfig, not the env KUBECONFIG)
+      ansible.builtin.set_fact:
+        acm_auth:
+          kubeconfig: "{{ (acm_kcfg_stat.results | selectattr('stat.exists') | map(attribute='stat.path') | list | first) }}"
+
+    - name: Check whether ACM (MultiClusterHub) is already installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ acm_auth }}"
+      register: acm_mch
+      failed_when: false
+
+    - name: Install ACM operator + MultiClusterHub on the hub
+      when: acm_mch.resources | default([]) | length == 0
+      block:
+        - name: Create the ACM operator namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ acm_namespace }}"
+          args: "{{ acm_auth }}"
+
+        - name: Create the ACM OperatorGroup (OwnNamespace install mode)
+          # ACM does NOT support the AllNamespaces install mode; an empty-spec
+          # OperatorGroup selects all namespaces and the CSV fails with
+          # "UnsupportedOperatorGroup". It must watch only its own namespace.
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: operators.coreos.com/v1
+              kind: OperatorGroup
+              metadata:
+                name: open-cluster-management-og
+                namespace: "{{ acm_namespace }}"
+              spec:
+                targetNamespaces:
+                  - "{{ acm_namespace }}"
+          args: "{{ acm_auth }}"
+
+        - name: Detect ACM operator default channel from its PackageManifest
+          kubernetes.core.k8s_info:
+            api_version: packages.operators.coreos.com/v1
+            kind: PackageManifest
+            name: advanced-cluster-management
+            namespace: openshift-marketplace
+          args: "{{ acm_auth }}"
+          register: acm_pkg
+          failed_when: false
+
+        - name: Resolve the subscription channel
+          ansible.builtin.set_fact:
+            acm_resolved_channel: >-
+              {{ acm_channel if (acm_channel | default('')) | length > 0
+                 else (acm_pkg.resources[0].status.defaultChannel
+                       if acm_pkg.resources | default([]) | length > 0 else '') }}
+
+        - name: Fail if no channel could be resolved
+          ansible.builtin.fail:
+            msg: >-
+              Could not resolve the ACM subscription channel. The
+              advanced-cluster-management PackageManifest was not found in
+              openshift-marketplace. Set acm_channel explicitly (e.g.
+              release-2.14) or verify the redhat-operators catalog source.
+          when: (acm_resolved_channel | default('')) | length == 0
+
+        - name: Create the ACM Subscription
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: operators.coreos.com/v1alpha1
+              kind: Subscription
+              metadata:
+                name: advanced-cluster-management
+                namespace: "{{ acm_namespace }}"
+              spec:
+                channel: "{{ acm_resolved_channel }}"
+                installPlanApproval: Automatic
+                name: advanced-cluster-management
+                source: redhat-operators
+                sourceNamespace: openshift-marketplace
+          args: "{{ acm_auth }}"
+
+        - name: Wait for the ACM operator CSV to succeed
+          kubernetes.core.k8s_info:
+            api_version: operators.coreos.com/v1alpha1
+            kind: ClusterServiceVersion
+            namespace: "{{ acm_namespace }}"
+          args: "{{ acm_auth }}"
+          register: acm_csv
+          until: >-
+            acm_csv.resources | default([])
+            | selectattr('metadata.name', 'match', '^advanced-cluster-management')
+            | selectattr('status.phase', 'defined')
+            | selectattr('status.phase', 'equalto', 'Succeeded')
+            | list | length > 0
+          retries: 40
+          delay: 15
+
+        - name: Create the MultiClusterHub
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: operator.open-cluster-management.io/v1
+              kind: MultiClusterHub
+              metadata:
+                name: multiclusterhub
+                namespace: "{{ acm_namespace }}"
+              spec: {}
+          args: "{{ acm_auth }}"
+
+        - name: Wait for the MultiClusterHub to become Running (up to ~20 min)
+          kubernetes.core.k8s_info:
+            api_version: operator.open-cluster-management.io/v1
+            kind: MultiClusterHub
+            name: multiclusterhub
+            namespace: "{{ acm_namespace }}"
+          args: "{{ acm_auth }}"
+          register: acm_mch_status
+          until: >-
+            acm_mch_status.resources | default([]) | length > 0 and
+            acm_mch_status.resources[0].status.phase | default('') == 'Running'
+          retries: 80
+          delay: 15
+
+        - name: ACM install complete
+          ansible.builtin.debug:
+            msg: "ACM installed on '{{ sno_cluster_name }}' (channel {{ acm_resolved_channel }}, MultiClusterHub Running)."
+
+    - name: ACM already present
+      ansible.builtin.debug:
+        msg: "ACM (MultiClusterHub) already installed on '{{ sno_cluster_name }}' - skipping install."
+      when: acm_mch.resources | default([]) | length > 0
+
+- name: Import All SNO Clusters into ACM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+    
+    - name: Discover cluster kubeconfigs (credentials/ and artifacts/)
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: discover_clusters
+      vars:
+        # Never import the ACM hub itself as a managed DR cluster.
+        discover_exclude_clusters: "{{ import_exclude_clusters | default(['acm']) }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0
+
+    - name: Check for existing ManagedCluster resources
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: existing_clusters
+      loop: "{{ clusters_to_import | default([]) }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0
+    
+    - name: Build list of clusters needing import
+      ansible.builtin.set_fact:
+        clusters_needing_import: >-
+          {{
+            existing_clusters.results |
+            selectattr('resources', 'defined') |
+            selectattr('resources', 'eq', []) |
+            map(attribute='item') |
+            list
+          }}
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and existing_clusters.results is defined
+    
+    - name: Display import status
+      ansible.builtin.debug:
+        msg:
+          - "Total clusters found: {{ clusters_to_import | default([]) | length }}"
+          - "Clusters already imported: {{ (clusters_to_import | default([]) | length) - (clusters_needing_import | default([]) | length) }}"
+          - "Clusters needing import: {{ clusters_needing_import | default([]) | length }}"
+          - "{{ clusters_needing_import | default([]) }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0
+    
+    - name: Check if cluster kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ cluster_kubeconfig_by_name[item] }}"
+      register: kubeconfig_checks
+      loop: "{{ clusters_needing_import | default([]) }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0
+    
+    - name: Read cluster kubeconfigs
+      ansible.builtin.slurp:
+        src: "{{ item.stat.path }}"
+      register: kubeconfig_contents
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create namespaces for managed clusters
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item.item }}"
+        state: present
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+    
+    - name: Create auto-import secrets
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: auto-import-secret
+        namespace: "{{ item.item.item }}"
+        state: present
+        definition:
+          type: Opaque
+          stringData:
+            autoImportRetry: "5"
+            kubeconfig: "{{ item.content | b64decode }}"
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.item.stat.exists
+      loop: "{{ kubeconfig_contents.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+    
+    - name: Create ManagedCluster resources
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item.item }}"
+        state: present
+        definition:
+          metadata:
+            labels:
+              name: "{{ item.item }}"
+              cluster-type: sno
+              cluster.open-cluster-management.io/clusterset: sno-demo
+              addons.open-cluster-management.io/volsync: "true"
+              addons.open-cluster-management.io/managed-serviceaccount: "true"
+          spec:
+            hubAcceptsClient: true
+            leaseDurationSeconds: 60
+      args: "{{ k8s_auth_params }}"
+      when: acm_check.resources is defined and acm_check.resources | length > 0 and item.stat.exists
+      loop: "{{ kubeconfig_checks.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+# Target the on-prem virt clusters (sno_clusters) AND the AWS IPI clusters
+# (sno_aws_clusters), excluding the ACM hub itself (acm-hub is local-cluster,
+# not a managed spoke). AWS host_vars blank sno_secondary_disk_device /
+# metallb_ip_address_ranges so the LVM + MetalLB per-cluster policies stay
+# scoped to the virt clusters.
 - name: Deploy infrastructure to SNO clusters via ACM Policy
-  hosts: sno_clusters
+  hosts: "sno_clusters:sno_aws_clusters:!acm-hub"
   gather_facts: false
   vars:
     operator_policy_action: "present"  # Set to "absent" to delete all resources
@@ -21,11 +322,11 @@
 
     - name: Display ACM status
       ansible.builtin.debug:
-        msg: "ACM {{ 'is installed' if acm_check.resources | length > 0 else 'is NOT installed' }}"
+        msg: "ACM {{ 'is installed' if acm_check.resources is defined and acm_check.resources | length > 0 else 'is NOT installed' }}"
 
     - name: Skip deployment if ACM is not installed
       ansible.builtin.meta: end_host
-      when: acm_check.resources | length == 0
+      when: acm_check.resources is not defined or acm_check.resources | length == 0
 
     - name: Check if OpenShift GitOps operator is installed on hub cluster
       kubernetes.core.k8s_info:
@@ -520,10 +821,18 @@
 
     - name: Check if MetalLB subnets are shared
       ansible.builtin.set_fact:
-        metallb_subnets_shared: "{{ all_metallb_ranges | map(attribute='ranges') | select('defined') | list | length > 0 and (all_metallb_ranges | map(attribute='ranges') | select('defined') | map('first') | map('regex_replace', '(\\d+\\.\\d+\\.\\d+)\\..*', '\\1') | unique | list | length == 1) }}"
+        metallb_subnets_shared: "{{ all_metallb_ranges | map(attribute='ranges') | select('defined') | reject('equalto', []) | list | length > 0 and (all_metallb_ranges | map(attribute='ranges') | select('defined') | reject('equalto', []) | map('first') | map('regex_replace', '(\\d+\\.\\d+\\.\\d+)\\..*', '\\1') | unique | list | length == 1) }}"
       run_once: true
       delegate_to: localhost
       when: all_metallb_ranges | default([]) | length > 0
+
+    - name: Determine whether MetalLB is in use on any target cluster
+      # Feeds the Submariner decision below (submariner_required is computed
+      # per clusterset member in the Submariner block).
+      ansible.builtin.set_fact:
+        metallb_in_use: "{{ (ansible_play_hosts | map('extract', hostvars, 'metallb_ip_address_ranges') | map('default', []) | map('length') | sum) > 0 }}"
+      run_once: true
+      delegate_to: localhost
 
     - name: Display MetalLB network configuration
       ansible.builtin.debug:
@@ -609,19 +918,6 @@
             clusterSet: sno-demo
       args: "{{ k8s_auth_params }}"
 
-    - name: Add SNO clusters to sno-demo ManagedClusterSet
-      kubernetes.core.k8s:
-        api_version: cluster.open-cluster-management.io/v1
-        kind: ManagedCluster
-        name: "{{ sno_cluster_name }}"
-        state: present
-        definition:
-          metadata:
-            labels:
-              cluster.open-cluster-management.io/clusterset: sno-demo
-      args: "{{ k8s_auth_params }}"
-      when: operator_policy_action == "present"
-
     - name: Create PlacementRule for SNO clusters
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1beta1
@@ -633,6 +929,11 @@
           spec:
             clusterSets:
               - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
       args: "{{ k8s_auth_params }}"
 
     - name: Create PlacementBinding for ArgoCD health monitoring on SNO clusters
@@ -1114,67 +1415,315 @@
               apiGroup: policy.open-cluster-management.io
       args: "{{ k8s_auth_params }}"
 
-    - name: Enable Submariner if MetalLB subnets are not shared
+    - name: Configure Submariner inter-cluster connectivity (ACM submariner-addon)
+      # Deploys the Broker on the hub and, per managed cluster in the clusterset,
+      # a SubmarinerConfig (AWS cloud-prepare) + ManagedClusterAddOn that installs
+      # the Submariner operator/gateway and joins the cluster to the broker.
       when:
-        - metallb_subnets_shared is defined
-        - not metallb_subnets_shared | default(true)
+        - submariner_enabled | default(true) | bool
         - operator_policy_action == "present"
       run_once: true
+      delegate_to: localhost
       block:
-        - name: Display Submariner deployment message
+        - name: Discover managed clusters in the {{ submariner_clusterset }} clusterset
+          kubernetes.core.k8s_info:
+            api_version: cluster.open-cluster-management.io/v1
+            kind: ManagedCluster
+            label_selectors:
+              - "cluster.open-cluster-management.io/clusterset={{ submariner_clusterset }}"
+          args: "{{ k8s_auth_params }}"
+          register: submariner_managed_clusters
+
+        - name: Build list of Submariner member clusters (exclude hub/local-cluster)
+          ansible.builtin.set_fact:
+            submariner_cluster_names: "{{ submariner_managed_clusters.resources | default([]) | map(attribute='metadata.name') | reject('equalto', 'local-cluster') | list }}"
+
+        - name: Determine AWS-backed cluster names (from inventory)
+          ansible.builtin.set_fact:
+            submariner_aws_cluster_names: "{{ (groups['sno_aws_clusters'] | default([]) | difference(['acm-hub'])) | map('extract', hostvars, 'sno_cluster_name') | select('string') | list }}"
+
+        - name: Decide whether Submariner is required for these members
+          # Required when any member is AWS-backed (no shared L2), or MetalLB is
+          # not in use, or the MetalLB ranges are on different subnets. Skipped
+          # only when every member shares a MetalLB subnet.
+          ansible.builtin.set_fact:
+            submariner_required: "{{ (submariner_cluster_names | intersect(submariner_aws_cluster_names) | length > 0) or (not (metallb_in_use | bool)) or (not (metallb_subnets_shared | default(false) | bool)) }}"
+
+        - name: Report Submariner decision
           ansible.builtin.debug:
             msg:
               - "=========================================="
-              - "SUBMARINER DEPLOYMENT REQUIRED"
-              - "Reason: MetalLB IP ranges are on different subnets"
-              - "Action: Enabling Submariner for inter-cluster connectivity"
+              - "SUBMARINER: {{ 'ENABLING' if submariner_required | bool else 'SKIPPED (shared MetalLB subnet)' }}"
+              - "ClusterSet: {{ submariner_clusterset }}   Globalnet: {{ submariner_globalnet_enabled }}"
+              - "Member clusters: {{ submariner_cluster_names | join(', ') | default('none', true) }}"
+              - "AWS-backed members: {{ submariner_cluster_names | intersect(submariner_aws_cluster_names) | join(', ') | default('none', true) }}"
               - "=========================================="
 
-        - name: Update ManagedClusterSet for Submariner (already exists as sno-demo)
-          ansible.builtin.debug:
-            msg: "Using existing sno-demo ManagedClusterSet for Submariner"
+        - name: Deploy Submariner broker and join member clusters
+          when: submariner_required | default(false) | bool
+          block:
+            - name: Fail if Submariner is required but no member clusters are imported
+              ansible.builtin.fail:
+                msg: >-
+                  Submariner is required but no managed clusters were found in the
+                  '{{ submariner_clusterset }}' clusterset. Import the spokes first
+                  (./ansible-runner.sh acmimport).
+              when: submariner_cluster_names | length == 0
 
-        - name: Create namespace for Submariner broker
-          kubernetes.core.k8s:
-            api_version: v1
-            kind: Namespace
-            name: submariner-operator
-            state: present
-          args: "{{ k8s_auth_params }}"
+            - name: Build AWS credential/region map for AWS-backed members
+              ansible.builtin.set_fact:
+                submariner_aws_map: "{{ submariner_aws_map | default({}) | combine({ hostvars[item].sno_cluster_name: {'profile': hostvars[item].aws_profile | default(''), 'region': hostvars[item].aws_region | default('us-east-2')} }) }}"
+              loop: "{{ groups['sno_aws_clusters'] | default([]) | difference(['acm-hub']) }}"
+              loop_control:
+                label: "{{ hostvars[item].sno_cluster_name | default(item) }}"
+              when:
+                - hostvars[item].sno_cluster_name is defined
+                - hostvars[item].sno_cluster_name in submariner_cluster_names
+                - (hostvars[item].aws_profile | default('')) | length > 0
 
-        - name: Deploy Submariner broker
-          kubernetes.core.k8s:
-            api_version: submariner.io/v1alpha1
-            kind: Broker
-            name: submariner-broker
-            namespace: submariner-operator
-            state: present
-            definition:
-              spec:
-                globalnetEnabled: false
-          args: "{{ k8s_auth_params }}"
+            - name: Create Submariner broker namespace ({{ submariner_clusterset }}-broker)
+              kubernetes.core.k8s:
+                api_version: v1
+                kind: Namespace
+                name: "{{ submariner_clusterset }}-broker"
+                state: present
+              args: "{{ k8s_auth_params }}"
 
-        - name: Create SubmarinerConfig for each cluster
-          kubernetes.core.k8s:
-            api_version: submarineraddon.open-cluster-management.io/v1alpha1
-            kind: SubmarinerConfig
-            name: submariner
-            namespace: "{{ item.cluster }}"
-            state: present
-            definition:
-              spec:
-                gatewayConfig:
-                  gateways: 1
-                  aws:
-                    instanceType: m5n.large
-                IPSecNATTPort: 4500
-                NATTEnable: true
-                cableDriver: libreswan
-                credentialsSecret:
-                  name: "{{ item.cluster }}-aws-creds"
-          args: "{{ k8s_auth_params }}"
-          loop: "{{ all_metallb_ranges }}"
-          when: item.ranges | default([]) | length > 0
+            - name: Create Submariner Broker (globalnet={{ submariner_globalnet_enabled }})
+              kubernetes.core.k8s:
+                api_version: submariner.io/v1alpha1
+                kind: Broker
+                name: submariner-broker
+                namespace: "{{ submariner_clusterset }}-broker"
+                state: present
+                # Build spec as a single expression so globalnetEnabled stays a
+                # native bool (quoted Jinja scalars would send it as a string).
+                definition:
+                  spec: "{{ { 'globalnetEnabled': submariner_globalnet_enabled | bool } }}"
+              args: "{{ k8s_auth_params }}"
+
+            - name: Create AWS credentials secret for Submariner cloud-prepare
+              kubernetes.core.k8s:
+                api_version: v1
+                kind: Secret
+                name: "{{ item }}-aws-creds"
+                namespace: "{{ item }}"
+                state: present
+                definition:
+                  type: Opaque
+                  stringData:
+                    aws_access_key_id: "{{ lookup('ini', 'aws_access_key_id', section=submariner_aws_map[item].profile, file=aws_shared_credentials_file) }}"
+                    aws_secret_access_key: "{{ lookup('ini', 'aws_secret_access_key', section=submariner_aws_map[item].profile, file=aws_shared_credentials_file) }}"
+              args: "{{ k8s_auth_params }}"
+              loop: "{{ submariner_cluster_names }}"
+              loop_control:
+                label: "{{ item }}"
+              no_log: true
+              when: item in (submariner_aws_map | default({}))
+
+            - name: Create SubmarinerConfig for AWS-backed clusters (drives cloud-prepare)
+              kubernetes.core.k8s:
+                api_version: submarineraddon.open-cluster-management.io/v1alpha1
+                kind: SubmarinerConfig
+                name: submariner
+                namespace: "{{ item }}"
+                state: present
+                definition:
+                  spec:
+                    gatewayConfig:
+                      gateways: 1
+                      aws:
+                        instanceType: "{{ submariner_aws_instance_type }}"
+                    NATTEnable: true
+                    cableDriver: libreswan
+                    credentialsSecret:
+                      name: "{{ item }}-aws-creds"
+              args: "{{ k8s_auth_params }}"
+              loop: "{{ submariner_cluster_names }}"
+              loop_control:
+                label: "{{ item }}"
+              when: item in (submariner_aws_map | default({}))
+
+            - name: Create SubmarinerConfig for non-AWS clusters (manual gateway)
+              kubernetes.core.k8s:
+                api_version: submarineraddon.open-cluster-management.io/v1alpha1
+                kind: SubmarinerConfig
+                name: submariner
+                namespace: "{{ item }}"
+                state: present
+                definition:
+                  spec:
+                    gatewayConfig:
+                      gateways: 1
+                    NATTEnable: true
+                    cableDriver: libreswan
+              args: "{{ k8s_auth_params }}"
+              loop: "{{ submariner_cluster_names }}"
+              loop_control:
+                label: "{{ item }}"
+              when: item not in (submariner_aws_map | default({}))
+
+            - name: Join member clusters to the broker (ManagedClusterAddOn submariner)
+              kubernetes.core.k8s:
+                api_version: addon.open-cluster-management.io/v1alpha1
+                kind: ManagedClusterAddOn
+                name: submariner
+                namespace: "{{ item }}"
+                state: present
+                definition:
+                  spec:
+                    installNamespace: submariner-operator
+              args: "{{ k8s_auth_params }}"
+              loop: "{{ submariner_cluster_names }}"
+              loop_control:
+                label: "{{ item }}"
+
+            - name: Wait for the Submariner addon to become Available on each cluster
+              kubernetes.core.k8s_info:
+                api_version: addon.open-cluster-management.io/v1alpha1
+                kind: ManagedClusterAddOn
+                name: submariner
+                namespace: "{{ item }}"
+              args: "{{ k8s_auth_params }}"
+              register: submariner_addon_status
+              loop: "{{ submariner_cluster_names }}"
+              loop_control:
+                label: "{{ item }}"
+              until: >-
+                submariner_addon_status.resources | default([]) | length > 0 and
+                (submariner_addon_status.resources[0].status.conditions | default([])
+                  | selectattr('type', 'equalto', 'Available')
+                  | selectattr('status', 'equalto', 'True') | list | length > 0)
+              retries: 60
+              delay: 15
+              ignore_errors: true
+
+            - name: Display Submariner link status
+              ansible.builtin.debug:
+                msg:
+                  - "=========================================="
+                  - "SUBMARINER link configured"
+                  - "Broker: submariner-broker in {{ submariner_clusterset }}-broker (globalnet={{ submariner_globalnet_enabled }})"
+                  - "Member clusters: {{ submariner_cluster_names | join(', ') }}"
+                  - "AWS cloud-prepared: {{ (submariner_aws_map | default({})).keys() | list | join(', ') | default('none', true) }}"
+                  - "Verify: oc -n <cluster> get managedclusteraddon submariner   (or: subctl show connections)"
+                  - "=========================================="
+
+    - name: Create namespace for VolSync RBAC policies
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: volsync-rbac-policies
+        state: present
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create ManagedClusterSetBinding for volsync-rbac-policies namespace
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSet: sno-demo
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create Placement for SNO clusters (for VolSync RBAC policy)
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: sno-volsync-rbac-placement
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          spec:
+            clusterSets:
+              - sno-demo
+            predicates:
+              - requiredClusterSelector:
+                  labelSelector:
+                    matchLabels:
+                      cluster-type: sno
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create Policy for VolSync privileged SCC on SNO clusters
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          metadata:
+            annotations:
+              policy.open-cluster-management.io/standards: NIST SP 800-53
+              policy.open-cluster-management.io/categories: AC Access Control
+              policy.open-cluster-management.io/controls: AC-6 Least Privilege
+          spec:
+            remediationAction: enforce
+            disabled: false
+            policy-templates:
+              - objectDefinition:
+                  apiVersion: policy.open-cluster-management.io/v1
+                  kind: ConfigurationPolicy
+                  metadata:
+                    name: volsync-privileged-scc-binding
+                  spec:
+                    remediationAction: enforce
+                    severity: high
+                    object-templates:
+                      - complianceType: musthave
+                        objectDefinition:
+                          kind: ClusterRoleBinding
+                          apiVersion: rbac.authorization.k8s.io/v1
+                          metadata:
+                            name: 'system:openshift:scc:anyuid-volsync'
+                          subjects:
+                            - kind: ServiceAccount
+                              name: volsync
+                              namespace: volsync-system
+                          roleRef:
+                            apiGroup: rbac.authorization.k8s.io
+                            kind: ClusterRole
+                            name: 'system:openshift:scc:anyuid'
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Create PlacementBinding for VolSync RBAC Policy
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: volsync-privileged-scc-binding
+        namespace: volsync-rbac-policies
+        state: present
+        definition:
+          placementRef:
+            name: sno-volsync-rbac-placement
+            apiGroup: cluster.open-cluster-management.io
+            kind: Placement
+          subjects:
+            - name: volsync-privileged-scc
+              apiGroup: policy.open-cluster-management.io
+              kind: Policy
+      args: "{{ k8s_auth_params }}"
+      when: operator_policy_action == "present"
+    
+    - name: Wait for VolSync RBAC Policy to be created
+      kubernetes.core.k8s_info:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: volsync-privileged-scc
+        namespace: volsync-rbac-policies
+      args: "{{ k8s_auth_params }}"
+      register: volsync_rbac_policy_status
+      until: volsync_rbac_policy_status.resources | length > 0
+      retries: 10
+      delay: 5
+      when: operator_policy_action == "present"
 
     - name: Display deployment status
       ansible.builtin.debug:
@@ -1197,4 +1746,11 @@
           - "{{ 'MetalLB IP Ranges: ' + (metallb_ip_address_ranges | join(', ')) if metallb_ip_address_ranges | default([]) | length > 0 else 'MetalLB IP Ranges: Not configured' }}"
           - "{{ 'Secondary Disk: Enabled (' + (sno_secondary_disk_device | default('/dev/vdb')) + ')' if sno_secondary_disk_device is defined and sno_secondary_disk_device != '' else 'Secondary Disk: Disabled' }}"
           - "{{ 'Submariner: ENABLED (subnets not shared)' if metallb_subnets_shared is defined and not metallb_subnets_shared else 'Submariner: Not required (shared subnet)' if metallb_subnets_shared is defined else '' }}"
+          - ""
+          - "VolSync RBAC Policy Deployed:"
+          - "  - Policy: volsync-privileged-scc"
+          - "  - Namespace: volsync-rbac-policies"
+          - "  - Target: All SNO clusters in sno-demo"
+          - "  - SCC: privileged"
+          - "  - ServiceAccount: volsync in openshift-operators"
           - "=========================================="

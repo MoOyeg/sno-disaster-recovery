@@ -1,0 +1,183 @@
+<mxfile host="app.diagrams.net" modified="2026-01-08T00:00:00.000Z" agent="5.0" version="22.1.0" etag="draw.io" type="device">
+  <diagram name="Policy Flow" id="flow">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- Title -->
+        <mxCell id="title" value="&lt;b&gt;ACM Policy Flow: Cross-Cluster Data Orchestration&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="600" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- Step 1: Hub Views -->
+        <mxCell id="step1-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step1-title" value="&lt;b&gt;Step 1: Hub Views&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="100" y="110" width="150" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step1-policy" value="Policy: vs-source-hub-views" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="100" y="145" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step1-desc" value="• Runs on Hub (local-cluster)&#xa;• Creates ManagedClusterView&#xa;• Targets standby clusters&#xa;• Labels: volsync-role=destination-info" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="180" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 1 -->
+        <mxCell id="arrow1" value="Creates" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step1-box" target="step2-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="400" y="180" as="sourcePoint" />
+            <mxPoint x="450" y="130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 2: ManagedClusterView -->
+        <mxCell id="step2-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="100" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step2-title" value="&lt;b&gt;Step 2: View Objects&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="500" y="110" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step2-obj" value="ManagedClusterView" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="500" y="145" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step2-desc" value="• Located in: sno-cluster2 namespace&#xa;• Queries: ReplicationDestination&#xa;• Namespace: quarkus-web-app&#xa;• Exposes: address, keySecret, etc." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="500" y="180" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 2 -->
+        <mxCell id="arrow2" value="Reads" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step2-box" target="step3-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="800" y="180" as="sourcePoint" />
+            <mxPoint x="850" y="130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 3: Hub Aggregation -->
+        <mxCell id="step3-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="880" y="100" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step3-title" value="&lt;b&gt;Step 3: Hub Aggregation&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="900" y="110" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step3-policy" value="Policy: vs-dest-info-hub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="900" y="145" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step3-desc" value="• Runs on Hub&#xa;• Query MCVs by label&#xa;• Extract destination info&#xa;• Create ConfigMap on hub" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="900" y="180" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 3 down -->
+        <mxCell id="arrow3" value="Creates" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step3-box" target="step4-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="1030" y="250" as="sourcePoint" />
+            <mxPoint x="1030" y="320" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 4: ConfigMap -->
+        <mxCell id="step4-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="880" y="320" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step4-title" value="&lt;b&gt;Step 4: ConfigMap (Hub)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="900" y="330" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step4-obj" value="volsync-dest-info-quarkus-web-app" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="900" y="365" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step4-desc" value="• Namespace: open-cluster-...set&#xa;• Data: address, keySecret, etc.&#xa;• Source of truth for active cluster&#xa;• Updated when labels change" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="900" y="400" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 4 left -->
+        <mxCell id="arrow4" value="Hub Template&#xa;{{hub...hub}}" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step4-box" target="step5-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="870" y="390" as="sourcePoint" />
+            <mxPoint x="780" y="390" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 5: Active Policy -->
+        <mxCell id="step5-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="320" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step5-title" value="&lt;b&gt;Step 5: Active Policy&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="500" y="330" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step5-policy" value="Policy: vs-source-active" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="500" y="365" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step5-desc" value="• Runs on Active cluster&#xa;• Copies ConfigMap from hub&#xa;• Uses hub template syntax&#xa;• Creates local ConfigMap copy" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="500" y="400" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 5 down -->
+        <mxCell id="arrow5" value="Uses" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step5-box" target="step6-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="630" y="470" as="sourcePoint" />
+            <mxPoint x="630" y="540" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 6: ConfigMap Local -->
+        <mxCell id="step6-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="540" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step6-title" value="&lt;b&gt;Step 6: Local ConfigMap&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="500" y="550" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step6-obj" value="volsync-dest-info-quarkus-web-app" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="500" y="585" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step6-desc" value="• Namespace: quarkus-web-app&#xa;• On Active cluster&#xa;• Copied from hub&#xa;• Contains destination details" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="500" y="620" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 6 left -->
+        <mxCell id="arrow6" value="Reads" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;fontSize=11;" edge="1" parent="1" source="step6-box" target="step7-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="470" y="610" as="sourcePoint" />
+            <mxPoint x="380" y="610" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Step 7: ReplicationSource -->
+        <mxCell id="step7-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="80" y="540" width="300" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="step7-title" value="&lt;b&gt;Step 7: Replication Source&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="100" y="550" width="220" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="step7-obj" value="ReplicationSource" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="100" y="585" width="260" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="step7-desc" value="• Created on Active cluster&#xa;• Uses ConfigMap for destination&#xa;• Replicates to Standby&#xa;• Schedule: */5 * * * *" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="620" width="260" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrow 7 up left -->
+        <mxCell id="arrow7" value="Replicates&#xa;to Standby" style="endArrow=classic;html=1;rounded=0;strokeWidth=3;strokeColor=#9673a6;fontSize=11;fontStyle=1;dashed=1;" edge="1" parent="1" source="step7-box" target="step2-box">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="230" y="530" as="sourcePoint" />
+            <mxPoint x="630" y="250" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="230" y="380" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Legend -->
+        <mxCell id="legend-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="80" y="730" width="1100" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" value="&lt;b&gt;Key Points:&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="100" y="740" width="100" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-text" value="• Hub templates ({{hub...hub}}) allow policies running on managed clusters to read data from the hub cluster&#xa;• ManagedClusterView provides a &quot;window&quot; from hub into managed cluster resources&#xa;• ConfigMap acts as an intermediary - hub aggregates data, active cluster consumes it&#xa;• Label-based filtering (volsync-role=destination-info) enables dynamic cluster discovery" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="760" width="1060" height="45" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

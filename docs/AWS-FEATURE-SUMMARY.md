@@ -42,21 +42,19 @@ Created comprehensive AWS deployment playbook (200+ lines) with:
 - `aws_route53_zone`: Route53 hosted zone (optional)
 - `aws_s3_bucket`: S3 bucket for ISO storage (optional)
 
-### 2. Ansible Runner Script - `ansible-runner.sh`
+### 2. Running the AWS playbook
 
-Updated script with AWS deployment command:
-
-**Changes:**
-- Added `deployaws` command to usage text
-- Updated Commands section with separate entries for `deploy` (OpenShift Virtualization) and `deployaws` (AWS)
-- Added AWS deployment examples
-- Added AWS environment variables section (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_PROFILE)
-- Added case statement for `deployaws` command execution
+> **Note:** The AWS IPI flow is **not** run through `ansible-runner.sh`. That
+> wrapper executes Ansible inside the `localhost/ansible-runner` container, which
+> ships only python + ansible — it has no `aws`, `openshift-install`, or `oc`
+> binary and does not mount `~/.aws/credentials`. Because `deploy-sno-aws.yml`
+> runs `delegate_to: localhost` / `ansible_connection: local` and shells out to
+> those host tools, run it directly on the host instead.
 
 **Usage:**
 ```bash
-./ansible-runner.sh deployaws [ansible options]
-./ansible-runner.sh deployaws --limit sno-aws-01
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml [ansible options]
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-01
 ```
 
 ### 3. Example Configuration - `inventory/host_vars/sno-aws-example.yml`
@@ -271,7 +269,7 @@ export KUBECONFIG=~/.kube/config
 export AWS_ACCESS_KEY_ID="..."
 export AWS_SECRET_ACCESS_KEY="..."
 
-./ansible-runner.sh deployaws --limit sno-aws-01
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-01
 ./ansible-runner.sh operators --limit sno-aws-01
 ./ansible-runner.sh deployapp
 ```
@@ -285,7 +283,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 # Deploy both clusters
 ./ansible-runner.sh deploy --limit sno-cluster-01
-./ansible-runner.sh deployaws --limit sno-aws-01
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-01
 
 # Deploy operators (Submariner auto-configured)
 ./ansible-runner.sh operators
@@ -448,7 +446,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 ## Verification Checklist
 
 - [x] AWS deployment playbook created and functional
-- [x] ansible-runner.sh updated with deployaws command
+- [x] AWS playbook runnable on host (`ansible-playbook -i inventory/hosts deploy-sno-aws.yml`)
 - [x] Example AWS configuration created
 - [x] Comprehensive AWS deployment guide written
 - [x] Quick start guide created

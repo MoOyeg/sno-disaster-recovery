@@ -1,0 +1,126 @@
+---
+- name: Remove All SNO Clusters from ACM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  tasks:
+    - name: Setup authentication parameters for hub cluster
+      ansible.builtin.include_role:
+        name: sno_prerequisites
+        tasks_from: auth_check
+    
+    - name: Check if ACM is installed
+      kubernetes.core.k8s_info:
+        api_version: operator.open-cluster-management.io/v1
+        kind: MultiClusterHub
+      args: "{{ k8s_auth_params }}"
+      register: acm_check
+      failed_when: false
+    
+    - name: Display ACM status
+      ansible.builtin.debug:
+        msg: "ACM {{ 'is installed' if (acm_check.resources | default([])) | length > 0 else 'is NOT installed' }}"
+
+    - name: Skip removal if ACM is not installed
+      ansible.builtin.meta: end_play
+      when: (acm_check.resources | default([])) | length == 0
+    
+    - name: Get all ManagedClusters in sno-demo clusterset
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        label_selectors:
+          - cluster.open-cluster-management.io/clusterset=sno-demo
+      args: "{{ k8s_auth_params }}"
+      register: managed_clusters
+    
+    - name: Build list of clusters to remove
+      ansible.builtin.set_fact:
+        clusters_to_remove: "{{ managed_clusters.resources | map(attribute='metadata.name') | list }}"
+    
+    - name: Display clusters found
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Clusters Found for Removal"
+          - "=========================================="
+          - "{{ clusters_to_remove | to_nice_json }}"
+          - "=========================================="
+    
+    - name: Skip if no clusters found
+      ansible.builtin.meta: end_play
+      when: clusters_to_remove | length == 0
+    
+    - name: Confirm cluster removal
+      ansible.builtin.pause:
+        prompt: |
+          
+          ==========================================
+          CONFIRM CLUSTER REMOVAL
+          ==========================================
+          
+          The following clusters will be removed from ACM:
+          {% for cluster in clusters_to_remove %}
+          - {{ cluster }}
+          {% endfor %}
+          
+          This will:
+          - Remove the ManagedCluster resource from ACM
+          - Delete the cluster namespace on the hub
+          - Remove all ACM agents from the managed clusters
+          
+          Type 'yes' to confirm removal, or 'no' to cancel
+      register: removal_confirmation
+    
+    - name: Cancel removal if not confirmed
+      ansible.builtin.meta: end_play
+      when: removal_confirmation.user_input | lower != 'yes'
+    
+    - name: Delete ManagedCluster resources
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ clusters_to_remove }}"
+    
+    - name: Wait for ManagedClusters to be deleted
+      kubernetes.core.k8s_info:
+        api_version: cluster.open-cluster-management.io/v1
+        kind: ManagedCluster
+        name: "{{ item }}"
+      args: "{{ k8s_auth_params }}"
+      register: cluster_check
+      until: cluster_check.resources | length == 0
+      retries: 30
+      delay: 10
+      failed_when: false
+      loop: "{{ clusters_to_remove }}"
+    
+    - name: Delete cluster namespaces
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ clusters_to_remove }}"
+    
+    - name: Display final status
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "ACM Cluster Removal Completed"
+          - "=========================================="
+          - "Clusters removed: {{ clusters_to_remove | length }}"
+          - ""
+          - "Note:"
+          - "- Clusters have been removed from ACM management"
+          - "- The actual clusters are still running"
+          - "- To destroy the clusters, run: ./ansible-runner.sh destroy"
+          - ""
+          - "To verify removal:"
+          - "   oc get managedclusters"
+          - "=========================================="

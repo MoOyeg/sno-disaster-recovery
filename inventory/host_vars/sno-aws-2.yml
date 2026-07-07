@@ -1,0 +1,33 @@
+---
+# AWS IPI SNO cluster #2 (secondary / failover target in the DR pair)
+sno_cluster_name: "sno2"
+
+# AWS account selection: named profile in ~/.aws/credentials ([sno2] section).
+aws_profile: "default"
+
+# sno_base_domain is auto-discovered from Route53 by deploy-sno-aws.yml.
+# Uncomment to pin it explicitly (must be a PUBLIC hosted zone in the account):
+# sno_base_domain: "sandbox1208.opentlc.com"
+
+# AWS placement / sizing
+aws_region: "us-east-2"
+aws_instance_type: "c5n.metal"     # bare metal (72 vCPU/192 GiB) - required for OpenShift Virtualization / VM DR
+aws_root_volume_size: 200          # GiB (CNV + containerdisk cache headroom)
+
+# Pin to a single AZ so the installer creates just one NAT gateway (=1 Elastic IP).
+# The default 5-EIP/region quota is shared: sno1 already uses 3 (one NAT GW per AZ),
+# so sno2 must stay within the remaining budget. Single-AZ is fine for SNO.
+aws_zones:
+  - "us-east-2a"
+
+# OpenShift release matching the installed openshift-install binary
+sno_openshift_version: "4.22.0"
+
+# ACM operator policies: AWS SNO uses the AWS EBS CSI default StorageClass and
+# has no MetalLB, so disable the LVM secondary-disk and MetalLB per-cluster
+# policies (they only make sense on the on-prem virt clusters). Submariner is
+# then selected automatically because MetalLB is not in use (submariner_required).
+sno_secondary_disk_device: ""
+metallb_ip_address_ranges: []
+
+ansible_connection: local

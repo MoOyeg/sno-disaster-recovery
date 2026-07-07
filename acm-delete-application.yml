@@ -44,7 +44,7 @@
           - "This will delete:"
           - ""
           - "Hub Cluster Resources:"
-          - "  - ApplicationSets (quarkus-mysql-appset, volsync-replicationdestination-appset)"
+          - "  - ApplicationSets (quarkus-mysql-appset, quarkus-mysql-pvc-appset, volsync-replicationdestination-appset)"
           - "  - Placements (sno-app-placement, sno-app-placement-active, sno-app-placement-standby)"
           - "  - ManagedClusterSetBinding (sno-demo) in openshift-gitops"
           - "  - Role and RoleBinding for GitOps in openshift-gitops"
@@ -61,7 +61,7 @@
           - "  - Application workloads deployed by ArgoCD"
           - ""
           - "Cluster Labels:"
-          - "  - Remove cluster-type and app-role labels from all SNO clusters"
+          - "  - Remove app-role label from all SNO clusters (cluster-type will be preserved)"
           - "=========================================="
     
     - name: Confirm deletion
@@ -102,6 +102,16 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete ApplicationSet for Quarkus MySQL PVC
+      kubernetes.core.k8s:
+        api_version: argoproj.io/v1alpha1
+        kind: ApplicationSet
+        name: quarkus-mysql-pvc-appset
+        namespace: openshift-gitops
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Delete ApplicationSet for VolSync ReplicationDestination
       kubernetes.core.k8s:
         api_version: argoproj.io/v1alpha1
@@ -125,6 +135,7 @@
       delay: 2
       loop:
         - quarkus-mysql-appset
+        - quarkus-mysql-pvc-appset
         - volsync-replicationdestination-appset
       ignore_errors: true
     
@@ -228,6 +239,96 @@
       args: "{{ k8s_auth_params }}"
       ignore_errors: true
     
+    - name: Delete VolSync automation policies
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: Policy
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - vs-source-hub-views
+        - vs-dest-info-hub
+        - vs-source-active
+        - vs-dest-active-del
+        - vs-source-standby-del
+        - vs-dest-standby
+      ignore_errors: true
+    
+    - name: Delete VolSync policy PlacementBindings
+      kubernetes.core.k8s:
+        api_version: policy.open-cluster-management.io/v1
+        kind: PlacementBinding
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - binding-vs-source-hub-views
+        - binding-vs-dest-info-hub
+        - binding-vs-dest-active-del
+        - binding-vs-source-active
+        - binding-vs-source-standby-del
+        - binding-vs-dest-standby
+      ignore_errors: true
+    
+    - name: Delete VolSync policy Placements
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta1
+        kind: Placement
+        name: "{{ item }}"
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop:
+        - sno-app-placement-hub
+        - sno-app-placement-active
+        - sno-app-placement-standby
+      ignore_errors: true
+    
+    - name: Delete VolSync destination info ConfigMap from hub
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: volsync-dest-info-quarkus-web-app
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
+    - name: Get all ManagedClusterView objects with VolSync label
+      kubernetes.core.k8s_info:
+        api_version: view.open-cluster-management.io/v1beta1
+        kind: ManagedClusterView
+        label_selectors:
+          - volsync-role=destination-info
+      args: "{{ k8s_auth_params }}"
+      register: volsync_mcvs
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterView objects for VolSync
+      kubernetes.core.k8s:
+        api_version: view.open-cluster-management.io/v1beta1
+        kind: ManagedClusterView
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ item.metadata.namespace }}"
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      loop: "{{ volsync_mcvs.resources | default([]) }}"
+      when: volsync_mcvs.resources is defined and volsync_mcvs.resources | length > 0
+      ignore_errors: true
+    
+    - name: Delete ManagedClusterSetBinding for open-cluster-management-global-set
+      kubernetes.core.k8s:
+        api_version: cluster.open-cluster-management.io/v1beta2
+        kind: ManagedClusterSetBinding
+        name: sno-demo
+        namespace: open-cluster-management-global-set
+        state: absent
+      args: "{{ k8s_auth_params }}"
+      ignore_errors: true
+    
     - name: Wait for Policies deletion
       kubernetes.core.k8s_info:
         api_version: policy.open-cluster-management.io/v1
@@ -310,7 +411,7 @@
       when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
       ignore_errors: true
     
-    - name: Remove cluster-type label from clusters
+    - name: Remove app-role label from clusters (keep cluster-type)
       kubernetes.core.k8s:
         api_version: cluster.open-cluster-management.io/v1
         kind: ManagedCluster
@@ -319,7 +420,7 @@
         definition:
           metadata:
             labels:
-              cluster-type: null
+              app-role: null
       args: "{{ k8s_auth_params }}"
       loop: "{{ labeled_clusters.resources }}"
       when: labeled_clusters.resources is defined and labeled_clusters.resources | length > 0
@@ -342,7 +443,7 @@
           - "  ✓ Namespace '{{ gitops_rbac_namespace }}' removed"
           - ""
           - "SNO Clusters:"
-          - "  ✓ Cluster labels (cluster-type, app-role) removed"
+          - "  ✓ app-role label removed (cluster-type preserved)"
           - "  ✓ ReplicationSource removed (if kubeconfig available)"
           - "  ✓ Application workloads cleaned up by ArgoCD"
           - ""

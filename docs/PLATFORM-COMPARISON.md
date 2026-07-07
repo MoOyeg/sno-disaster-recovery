@@ -274,7 +274,7 @@ For the best disaster recovery strategy, combine both:
 ./ansible-runner.sh deploy --limit sno-cluster-01
 
 # Deploy DR site on AWS
-./ansible-runner.sh deployaws --limit sno-aws-01
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-01
 
 # Deploy operators to both
 ./ansible-runner.sh operators
@@ -346,7 +346,7 @@ For the best disaster recovery strategy, combine both:
 
 **Steps:**
 1. Create AWS host_vars with appropriate configuration
-2. Run `./ansible-runner.sh deployaws`
+2. Run `ansible-playbook -i inventory/hosts deploy-sno-aws.yml`
 3. Redeploy operators with `./ansible-runner.sh operators`
 4. Applications automatically deploy via GitOps
 

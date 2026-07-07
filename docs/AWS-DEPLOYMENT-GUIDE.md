@@ -358,9 +358,13 @@ ls -l ssh-key.pub
 
 ### 2. Deploy Cluster
 
+Run this on the host (not via `ansible-runner.sh`): the AWS IPI flow shells out
+to `openshift-install`, `aws`, and `oc` and reads `~/.aws/credentials`, none of
+which exist in the `ansible-runner` container.
+
 ```bash
 # Deploy SNO cluster on AWS
-./ansible-runner.sh deployaws --limit sno-aws-01
+ansible-playbook -i inventory/hosts deploy-sno-aws.yml --limit sno-aws-01
 ```
 
 ### 3. Monitor Progress
